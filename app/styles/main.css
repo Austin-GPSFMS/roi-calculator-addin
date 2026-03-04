@@ -41,48 +41,45 @@ body {
     font-size: 14px;
 }
 
-.calculator-grid {
-    display: grid;
-    grid-template-columns: 300px 1fr;
-    gap: 24px;
-}
-
-.panel {
+.filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 16px;
     background: var(--card-bg);
+    padding: 16px;
     border-radius: 8px;
-    padding: 24px;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    margin-bottom: 24px;
 }
 
-.panel h2 {
-    margin-top: 0;
-    margin-bottom: 20px;
-    font-size: 18px;
-    font-weight: 500;
-    border-bottom: 1px solid var(--border-color);
-    padding-bottom: 12px;
+.filter-group {
+    display: flex;
+    flex-direction: column;
 }
 
-.form-group {
-    margin-bottom: 16px;
+.date-picker-group {
+    display: flex;
+    flex-direction: row;
+    gap: 12px;
 }
 
-.form-group label {
+.small-label {
     display: block;
     margin-bottom: 6px;
-    font-size: 14px;
+    font-size: 13px;
     color: var(--text-dark);
     font-weight: 500;
 }
 
 .geotab-input {
-    width: 100%;
     padding: 8px 12px;
     border: 1px solid var(--border-color);
     border-radius: 4px;
     font-size: 14px;
     box-sizing: border-box;
     font-family: 'Roboto', sans-serif;
+    min-width: 140px;
 }
 
 .geotab-input:focus {
@@ -99,8 +96,8 @@ body {
     cursor: pointer;
     font-size: 14px;
     font-weight: 500;
-    width: 100%;
-    margin-top: 16px;
+    height: 38px;
+    white-space: nowrap;
 }
 
 .geotab-button.active {
@@ -113,58 +110,60 @@ body {
     background: #1e437a;
 }
 
-/* Results Panel */
-.results-panel {
+/* Dashboard Content */
+.dashboard-content {
     position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
 }
 
-.results-grid {
+.top-stats-row {
+    display: flex;
+    gap: 24px;
+}
+
+.secondary-stats-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 16px;
-    margin-bottom: 24px;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 24px;
+    flex: 1;
 }
 
 .result-card {
-    background: #fafafa;
+    background: var(--card-bg);
     border: 1px solid var(--border-color);
-    border-radius: 6px;
-    padding: 16px;
+    border-radius: 8px;
+    padding: 24px;
     text-align: center;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+
+.primary-card {
+    background: var(--geotab-light-blue);
+    border-color: #c7d2e3;
+    min-width: 300px;
+}
+
+.primary-card h3 {
+    color: var(--geotab-blue) !important;
 }
 
 .result-card h3 {
     margin: 0 0 12px 0;
-    font-size: 14px;
+    font-size: 16px;
     color: var(--text-light);
     font-weight: 500;
 }
 
 .metric {
-    font-size: 28px;
+    font-size: 32px;
     font-weight: 700;
     color: var(--text-dark);
     margin-bottom: 8px;
-}
-
-.detail {
-    margin: 0;
-    font-size: 12px;
-    color: var(--text-light);
-}
-
-.total-card {
-    background: var(--geotab-light-blue);
-    border-radius: 6px;
-    padding: 24px;
-    text-align: center;
-    border: 1px solid #c7d2e3;
-}
-
-.total-card h3 {
-    margin: 0 0 12px 0;
-    font-size: 18px;
-    color: var(--geotab-blue);
 }
 
 .total-metric {
@@ -172,6 +171,34 @@ body {
     font-weight: 700;
     color: var(--success-green);
     margin-bottom: 8px;
+}
+
+.detail {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-light);
+}
+
+/* Chart Section */
+.chart-section {
+    background: var(--card-bg);
+    border-radius: 8px;
+    padding: 24px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.chart-section h2 {
+    margin-top: 0;
+    margin-bottom: 20px;
+    font-size: 18px;
+    font-weight: 500;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 12px;
+}
+
+.chart-container {
+    height: 300px;
+    width: 100%;
 }
 
 /* Loading Overlay */
@@ -188,6 +215,7 @@ body {
     justify-content: center;
     z-index: 10;
     border-radius: 8px;
+    min-height: 400px;
 }
 
 .loading-overlay.hidden {
@@ -211,8 +239,18 @@ body {
 }
 
 /* Responsive */
+@media (max-width: 1024px) {
+    .top-stats-row {
+        flex-direction: column;
+    }
+
+    .primary-card {
+        min-width: auto;
+    }
+}
+
 @media (max-width: 768px) {
-    .calculator-grid {
+    .secondary-stats-grid {
         grid-template-columns: 1fr;
     }
 }
