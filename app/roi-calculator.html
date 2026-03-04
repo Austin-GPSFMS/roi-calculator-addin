@@ -27,12 +27,17 @@
                 <h2>Settings</h2>
 
                 <div class="form-group">
-                    <label for="date-range">Target Date Range</label>
-                    <select id="date-range" class="geotab-input">
-                        <option value="7">Last 7 Days</option>
-                        <option value="30" selected>Last 30 Days</option>
-                        <option value="90">Last 90 Days</option>
-                    </select>
+                    <label>Target Date Range</label>
+                    <div class="date-picker-group">
+                        <div class="date-input-container">
+                            <label for="date-from" class="small-label">From</label>
+                            <input type="date" id="date-from" class="geotab-input date-input">
+                        </div>
+                        <div class="date-input-container">
+                            <label for="date-to" class="small-label">To</label>
+                            <input type="date" id="date-to" class="geotab-input date-input">
+                        </div>
+                    </div>
                 </div>
 
                 <div class="form-group">
