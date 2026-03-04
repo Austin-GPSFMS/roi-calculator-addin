@@ -11,5 +11,6 @@
       },
       "icon": "app/images/icon.svg"
     }
-  ]
+  ],
+  "isSigned": false
 }
