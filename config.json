@@ -1,17 +1,15 @@
 {
-    "dev": {
-        "dist": {
-            "port": 9001
-        }
-    },
-    "items": [
-        {
-            "url": "app/roi-calculator.html",
-            "path": "ActivityLink/",
-            "menuName": {
-                "en": "ROI Calculator"
-            },
-            "icon": "app/images/icon.svg"
-        }
-    ]
+  "name": "ROI Calculator",
+  "supportEmail": "support@gpsfms.com",
+  "version": "1.0",
+  "items": [
+    {
+      "page": "app/roi-calculator.html",
+      "path": "ActivityLink/",
+      "menuName": {
+        "en": "ROI Calculator"
+      },
+      "icon": "app/images/icon.svg"
+    }
+  ]
 }
