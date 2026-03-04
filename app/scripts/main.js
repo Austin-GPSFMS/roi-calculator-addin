@@ -368,10 +368,10 @@ geotab.addin.roiCalculator = function (api, state) {
             const groupData = await apiService.getDeviceGroupsMap();
 
             console.log("ROI Calculator: Fetching idle duration...");
-            const idleHoursData = await apiService.getIdleDurationPerDevice(fromDate, toDate);
+            const idleHoursData = await apiService.getIdleDurationPerDevice(devices, fromDate, toDate);
 
             console.log("ROI Calculator: Fetching harsh driving data...");
-            const harshEventsData = await apiService.getHarshDrivingPerDevice(fromDate, toDate);
+            const harshEventsData = await apiService.getHarshDrivingPerDevice(devices, fromDate, toDate);
 
             console.log("ROI Calculator: Fetching trip utilization...");
             const subPeriodVal = elements.subPeriodInput.value || 'Daily';
