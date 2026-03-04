@@ -34,13 +34,29 @@
                 </div>
 
                 <div class="filter-group">
+                    <label for="group-filter" class="small-label">Groups</label>
+                    <select id="group-filter" class="geotab-input">
+                        <option value="all">All Groups</option>
+                        <!-- Options injected dynamically -->
+                    </select>
+                </div>
+
+                <div class="filter-group">
                     <label for="fuel-price" class="small-label">Fuel Price ($/gal)</label>
-                    <input type="number" id="fuel-price" class="geotab-input" value="4.00" step="0.01" min="0">
+                    <input type="number" id="fuel-price" class="geotab-input" value="4.00" step="0.01" min="0"
+                        style="width: 100px;">
+                </div>
+
+                <div class="filter-group">
+                    <label for="harsh-cost" class="small-label">Cost per Harsh Event ($)</label>
+                    <input type="number" id="harsh-cost" class="geotab-input" value="50.00" step="1.00" min="0"
+                        style="width: 130px;">
                 </div>
 
                 <div class="filter-group">
                     <label for="stationary-cost" class="small-label">Stationary Asset Cost ($/day)</label>
-                    <input type="number" id="stationary-cost" class="geotab-input" value="15.00" step="1.00" min="0">
+                    <input type="number" id="stationary-cost" class="geotab-input" value="15.00" step="1.00" min="0"
+                        style="width: 140px;">
                 </div>
 
                 <button id="calculate-btn" class="geotab-button active">Update Results</button>
@@ -69,9 +85,9 @@
                     </div>
 
                     <div class="result-card">
-                        <h3>Harsh Driving Events</h3>
-                        <div class="metric" id="metric-safety-risk">0</div>
-                        <p class="detail" id="detail-safety">Instances across fleet</p>
+                        <h3>Harsh Driving Cost</h3>
+                        <div class="metric" id="metric-safety-risk">$0</div>
+                        <p class="detail" id="detail-safety">0 events across fleet</p>
                     </div>
 
                     <div class="result-card">
@@ -87,6 +103,43 @@
                 <h2>Savings Breakdown</h2>
                 <div class="chart-container">
                     <canvas id="savingsChart"></canvas>
+                </div>
+            </section>
+
+            <!-- Leaderboards Section -->
+            <section class="leaderboards-section">
+                <div class="leaderboard-card panel negative-leaderboard">
+                    <h2>Highest Potential Savings (Most Costly)</h2>
+                    <table class="geotab-table leaderboard-table">
+                        <thead>
+                            <tr>
+                                <th>Vehicle</th>
+                                <th style="text-align: right;">Cost Output ($)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="leaderboard-worst-body">
+                            <tr>
+                                <td colspan="2" class="empty-state">Loading...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="leaderboard-card panel positive-leaderboard">
+                    <h2>Lowest Cost Assets (Most Efficient)</h2>
+                    <table class="geotab-table leaderboard-table">
+                        <thead>
+                            <tr>
+                                <th>Vehicle</th>
+                                <th style="text-align: right;">Cost Output ($)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="leaderboard-best-body">
+                            <tr>
+                                <td colspan="2" class="empty-state">Loading...</td>
+                            </tr>
+                        </tbody>
+                    </table>
                 </div>
             </section>
 
