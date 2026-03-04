@@ -11,6 +11,7 @@ geotab.addin.roiCalculator = function (api, state) {
     const elements = {
         dateFromInput: document.getElementById('date-from'),
         dateToInput: document.getElementById('date-to'),
+        subPeriodInput: document.getElementById('sub-period'),
         groupFilterInput: document.getElementById('group-filter'),
         fuelPriceInput: document.getElementById('fuel-price'),
         harshCostInput: document.getElementById('harsh-cost'),
@@ -47,7 +48,7 @@ geotab.addin.roiCalculator = function (api, state) {
         rawGroups: [],
         idleHoursData: { totalHours: 0, deviceIdling: {} },
         harshEventsData: { totalCount: 0, deviceHarshCounts: {} },
-        utilizationData: { underutilizedCount: 0, deviceUtilization: {} },
+        utilizationData: { totalStationaryPeriods: 0, deviceUtilizationSubperiods: {} },
         tableRows: [] // Used for export
     };
 
@@ -177,6 +178,11 @@ geotab.addin.roiCalculator = function (api, state) {
         const harshEventCost = parseFloat(elements.harshCostInput.value) || 0;
         const days = cachedData.selectedDaysCount || 30;
         const selectedGroupId = elements.groupFilterInput.value;
+        const subPeriodVal = elements.subPeriodInput.value || 'Daily';
+
+        let daysPerSubPeriod = 1;
+        if (subPeriodVal === 'Weekly') daysPerSubPeriod = 7;
+        if (subPeriodVal === 'Monthly') daysPerSubPeriod = 30;
 
         // Filter Devices Globally based on group
         let filteredDevices = cachedData.devices;
@@ -190,20 +196,18 @@ geotab.addin.roiCalculator = function (api, state) {
         // Recalculate Totals based on filtered devices
         let totalIdleHours = 0;
         let totalHarshCount = 0;
-        let totalUnderutilizedCount = 0;
+        let totalStationaryPeriodsCount = 0;
 
         filteredDevices.forEach(d => {
             totalIdleHours += cachedData.idleHoursData.deviceIdling[d.id] || 0;
             totalHarshCount += cachedData.harshEventsData.deviceHarshCounts[d.id] || 0;
-            if (cachedData.utilizationData.deviceUtilization[d.id]) {
-                totalUnderutilizedCount++;
-            }
+            totalStationaryPeriodsCount += cachedData.utilizationData.deviceUtilizationSubperiods[d.id] || 0;
         });
 
         // 1. Top Level Metrics
         const totalIdleCost = totalIdleHours * IDLE_FUEL_BURN_RATE_GPH * fuelPrice;
         const totalSafetyCost = totalHarshCount * harshEventCost;
-        const utilCostTotal = totalUnderutilizedCount * stationaryDailyCost * days;
+        const utilCostTotal = totalStationaryPeriodsCount * daysPerSubPeriod * stationaryDailyCost;
 
         const totalSavings = totalIdleCost + totalSafetyCost + utilCostTotal; // Now includes Safety Config Cost
 
@@ -215,7 +219,7 @@ geotab.addin.roiCalculator = function (api, state) {
         elements.detailSafety.textContent = `${formatNumber(totalHarshCount)} events across fleet`;
 
         elements.metricUtil.textContent = formatCurrency(utilCostTotal);
-        elements.detailUtil.textContent = `${formatNumber(totalUnderutilizedCount)} vehicles w/ no trips`;
+        elements.detailUtil.textContent = `${formatNumber(totalStationaryPeriodsCount)} stationary ${subPeriodVal.toLowerCase()} periods`;
 
         elements.metricTotal.textContent = formatCurrency(totalSavings);
 
@@ -252,8 +256,8 @@ geotab.addin.roiCalculator = function (api, state) {
             const devHarshCount = cachedData.harshEventsData.deviceHarshCounts[devId] || 0;
             const devSafetyCost = devHarshCount * harshEventCost;
 
-            const isUnderutilized = cachedData.utilizationData.deviceUtilization[devId];
-            const devUtilCost = isUnderutilized ? (stationaryDailyCost * days) : 0;
+            const devStationaryPeriods = cachedData.utilizationData.deviceUtilizationSubperiods[devId] || 0;
+            const devUtilCost = devStationaryPeriods * daysPerSubPeriod * stationaryDailyCost;
 
             const devTotalPotentialSavings = devIdleCost + devSafetyCost + devUtilCost;
 
@@ -370,7 +374,8 @@ geotab.addin.roiCalculator = function (api, state) {
             const harshEventsData = await apiService.getHarshDrivingPerDevice(fromDate, toDate);
 
             console.log("ROI Calculator: Fetching trip utilization...");
-            const utilizationData = await apiService.getUtilizationPerDevice(devices, fromDate, toDate);
+            const subPeriodVal = elements.subPeriodInput.value || 'Daily';
+            const utilizationData = await apiService.getUtilizationPerDevice(devices, fromDate, toDate, subPeriodVal);
 
             // Cache data
             cachedData = {
@@ -383,15 +388,44 @@ geotab.addin.roiCalculator = function (api, state) {
                 tableRows: []
             };
 
-            // Populate Dropdown if not already grouped
+            // Populate Dropdown Hierarchically if not already built
             if (elements.groupFilterInput.options.length <= 1) {
-                const sortedGroups = [...groupData.rawGroups].sort((a, b) => a.name.localeCompare(b.name));
-                sortedGroups.forEach(g => {
-                    const opt = document.createElement('option');
-                    opt.value = g.id;
-                    opt.textContent = g.name;
-                    elements.groupFilterInput.appendChild(opt);
+                elements.groupFilterInput.innerHTML = '<option value="all">All Groups</option>'; // reset
+
+                const rawGroups = groupData.rawGroups;
+                const groupMap = new Map();
+                rawGroups.forEach(g => groupMap.set(g.id, g));
+
+                // Find root groups
+                const allChildrenIds = new Set();
+                rawGroups.forEach(g => {
+                    if (g.children) {
+                        g.children.forEach(c => allChildrenIds.add(c.id));
+                    }
                 });
+
+                const rootGroups = rawGroups.filter(g => !allChildrenIds.has(g.id)).sort((a, b) => a.name.localeCompare(b.name));
+
+                const addGroupOpt = (group, depth) => {
+                    const opt = document.createElement('option');
+                    opt.value = group.id;
+                    const isFolder = group.children && group.children.length > 0;
+                    const indent = '\u00A0\u00A0\u00A0\u00A0'.repeat(depth);
+                    opt.textContent = indent + (isFolder ? '📁 ' : '') + group.name;
+
+                    elements.groupFilterInput.appendChild(opt);
+
+                    if (isFolder) {
+                        const sortedChildren = group.children
+                            .map(c => groupMap.get(c.id))
+                            .filter(c => c)
+                            .sort((a, b) => a.name.localeCompare(b.name));
+
+                        sortedChildren.forEach(c => addGroupOpt(c, depth + 1));
+                    }
+                };
+
+                rootGroups.forEach(g => addGroupOpt(g, 0));
             }
 
             // Calculate and display
@@ -448,14 +482,28 @@ geotab.addin.roiCalculator = function (api, state) {
      * Attach Event Listeners to UI Interactivity
      */
     const attachListeners = () => {
-        // Recalculate instantly when inputs change (no API fetch needed)
+        // Recalculate instantly when math inputs change
         elements.fuelPriceInput.addEventListener('input', updateCalculationsUI);
         elements.stationaryCostInput.addEventListener('input', updateCalculationsUI);
         elements.harshCostInput.addEventListener('input', updateCalculationsUI);
         elements.groupFilterInput.addEventListener('change', updateCalculationsUI);
 
-        // Fetch new data when Calculate button clicked
+        // Fetch new API data when these change
         elements.calculateBtn.addEventListener('click', fetchData);
+        elements.subPeriodInput.addEventListener('change', fetchData);
+
+        // Date Validation constraints
+        elements.dateFromInput.addEventListener('change', () => {
+            if (elements.dateFromInput.valueAsDate > elements.dateToInput.valueAsDate) {
+                elements.dateToInput.valueAsDate = elements.dateFromInput.valueAsDate;
+            }
+        });
+
+        elements.dateToInput.addEventListener('change', () => {
+            if (elements.dateToInput.valueAsDate < elements.dateFromInput.valueAsDate) {
+                elements.dateFromInput.valueAsDate = elements.dateToInput.valueAsDate;
+            }
+        });
 
         // Export Dropdown Logic
         const exportBtn = document.getElementById('export-btn');
