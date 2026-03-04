@@ -90,7 +90,7 @@ window.GeotabApiService.prototype = {
                 search: {
                     fromDate: fromDate.toISOString(),
                     toDate: toDate.toISOString(),
-                    ruleSearch: { id: "RuleIdlingId" }
+                    ruleSearch: { id: "aU_66pnHj8EeIWFcP8CcX7Q" } // Custom Idling Rule ID
                 }
             });
 
@@ -127,7 +127,7 @@ window.GeotabApiService.prototype = {
         const deviceHarshCounts = {}; // { deviceId: count }
         let totalCount = 0;
 
-        const ruleIds = ["RuleHardAccelerationId", "RuleHardBrakingId", "RuleHardCorneringId"];
+        const ruleIds = ["RuleJackrabbitStartsId", "RuleHarshBrakingId", "RuleHarshCorneringId"];
 
         // Fetch each rule sequentially to prevent one missing rule from taking down the others
         for (const ruleId of ruleIds) {
@@ -161,42 +161,86 @@ window.GeotabApiService.prototype = {
 
     /**
      * Get underutilized vehicles mapping
-     * Optimized: Just look for StatusData instead of gigantic Trip lists
+     * Optimized: Just look for StatusData instead of gigantic Trip lists.
+     * Grabs Odometer point at start of period and end of period to calculate difference.
      */
     getUtilizationPerDevice: async function (devices, fromDate, toDate) {
         try {
-            // Because trips can be massive for an entire fleet, 
-            // a faster approach is looking for ANY LogRecord or StatusData.
-            // But if we must use Trips, we limit the payload to bare minimum
-            const trips = await this._call("Get", {
-                typeName: "Trip",
-                search: {
-                    fromDate: fromDate.toISOString(),
-                    toDate: toDate.toISOString()
+            // Helper to chunk multiCalls to avoid API limits (Geotab limit is usually 10,000, we use 2,000 for safety)
+            const chunkArray = (array, size) => {
+                const results = [];
+                for (let i = 0; i < array.length; i += size) {
+                    results.push(array.slice(i, i + size));
                 }
-            });
+                return results;
+            };
 
-            const devicesWithTrips = new Set();
-            if (trips) {
-                trips.forEach(trip => {
-                    if (trip.device && trip.device.id) {
-                        devicesWithTrips.add(trip.device.id);
-                    }
-                });
-            }
+            const runChunkedMultiCall = async (calls) => {
+                const chunks = chunkArray(calls, 2000);
+                let allResults = [];
+                for (const chunk of chunks) {
+                    const res = await this._multiCall(chunk);
+                    allResults = allResults.concat(res);
+                }
+                return allResults;
+            };
+
+            const fromCalls = devices.map(d => ["Get", {
+                typeName: "StatusData",
+                search: {
+                    deviceSearch: { id: d.id },
+                    diagnosticSearch: { id: "DiagnosticOdometerId" },
+                    fromDate: fromDate.toISOString()
+                },
+                resultsLimit: 1
+            }]);
+
+            const toCalls = devices.map(d => ["Get", {
+                typeName: "StatusData",
+                search: {
+                    deviceSearch: { id: d.id },
+                    diagnosticSearch: { id: "DiagnosticOdometerId" },
+                    fromDate: toDate.toISOString() // First record after End Date
+                },
+                resultsLimit: 1
+            }]);
+
+            // Execute in parallel
+            const [fromOdoResults, toOdoResults] = await Promise.all([
+                runChunkedMultiCall(fromCalls),
+                runChunkedMultiCall(toCalls)
+            ]);
 
             const deviceUtilization = {}; // { deviceId: isUnderutilized (boolean) }
             let underutilizedCount = 0;
 
-            devices.forEach(d => {
-                const isUnderutilized = !devicesWithTrips.has(d.id);
+            devices.forEach((d, index) => {
+                // Extract odometer values (in meters)
+                const fromOdoData = fromOdoResults[index] && fromOdoResults[index].length > 0 ? fromOdoResults[index][0].data : null;
+                const toOdoData = toOdoResults[index] && toOdoResults[index].length > 0 ? toOdoResults[index][0].data : null;
+
+                let isUnderutilized = false;
+
+                if (fromOdoData !== null && toOdoData !== null) {
+                    // Calculate distance traveled in period
+                    const diffMeters = Math.abs(toOdoData - fromOdoData);
+
+                    // If difference is less than 2000 meters (2km), we consider it stationary (accounts for minor GPS drift)
+                    if (diffMeters < 2000) {
+                        isUnderutilized = true;
+                    }
+                } else {
+                    // If either point is missing entirely from Geotab historical data, assume stationary/offline
+                    isUnderutilized = true;
+                }
+
                 deviceUtilization[d.id] = isUnderutilized;
                 if (isUnderutilized) underutilizedCount++;
             });
 
             return { underutilizedCount, deviceUtilization };
         } catch (e) {
-            console.error("Error fetching utilization data", e);
+            console.error("Error fetching utilization data via Odometer points", e);
             throw e;
         }
     }
