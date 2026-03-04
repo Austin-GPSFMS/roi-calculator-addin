@@ -12,8 +12,7 @@ geotab.addin.roiCalculator = function (api, state) {
         dateFromInput: document.getElementById('date-from'),
         dateToInput: document.getElementById('date-to'),
         fuelPriceInput: document.getElementById('fuel-price'),
-        hourlyWageInput: document.getElementById('hourly-wage'),
-        accidentCostInput: document.getElementById('accident-cost'),
+        stationaryCostInput: document.getElementById('stationary-cost'),
         calculateBtn: document.getElementById('calculate-btn'),
         loadingOverlay: document.getElementById('loading-overlay'),
 
@@ -24,12 +23,14 @@ geotab.addin.roiCalculator = function (api, state) {
         detailSafety: document.getElementById('detail-safety'),
         metricUtil: document.getElementById('metric-utilization'),
         detailUtil: document.getElementById('detail-util'),
-        metricTotal: document.getElementById('metric-total-savings')
+        metricTotal: document.getElementById('metric-total-savings'),
+
+        // Chart container
+        savingsChartCanvas: document.getElementById('savingsChart')
     };
 
     // Core Constants for calculations (Assumptions)
     const IDLE_FUEL_BURN_RATE_GPH = 0.5; // Average gallons per hour consumed while idling
-    const AVG_MONTHLY_VEHICLE_COST = 500; // Sunk cost assumption for an underutilized asset per month
 
     // Add-in state
     let cachedData = {
@@ -41,6 +42,9 @@ geotab.addin.roiCalculator = function (api, state) {
         utilizationData: { underutilizedCount: 0, deviceUtilization: {} },
         tableRows: [] // Used for export
     };
+
+    // Chart Instance Map
+    let savingsChartInstance = null;
 
     /**
      * Set default dates in UI (Last 30 days)
@@ -78,34 +82,101 @@ geotab.addin.roiCalculator = function (api, state) {
     };
 
     /**
+     * Renders or updates Chart.js instance with new totals
+     */
+    const renderChart = (idleCost, utilCost) => {
+        const ctx = elements.savingsChartCanvas.getContext('2d');
+
+        const data = {
+            labels: ['Total Potential Savings'],
+            datasets: [
+                {
+                    label: 'Excess Idling Cost',
+                    data: [idleCost],
+                    backgroundColor: 'rgba(37, 83, 153, 0.8)', // Geotab Blue
+                    borderWidth: 0
+                },
+                {
+                    label: 'Stationary Asset Cost',
+                    data: [utilCost],
+                    backgroundColor: 'rgba(239, 68, 68, 0.8)', // Red
+                    borderWidth: 0
+                }
+            ]
+        };
+
+        const config = {
+            type: 'bar',
+            data: data,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: 'top',
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function (context) {
+                                let label = context.dataset.label || '';
+                                if (label) {
+                                    label += ': ';
+                                }
+                                if (context.parsed.y !== null) {
+                                    label += formatCurrency(context.parsed.y);
+                                }
+                                return label;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        stacked: true,
+                    },
+                    y: {
+                        stacked: true,
+                        ticks: {
+                            callback: function (value) {
+                                return '$' + value;
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        if (savingsChartInstance) {
+            savingsChartInstance.destroy();
+        }
+
+        savingsChartInstance = new window.Chart(ctx, config);
+    };
+
+    /**
      * Renders the calculated mathematical results back to the UI
      */
     const updateCalculationsUI = () => {
         // Inputs
         const fuelPrice = parseFloat(elements.fuelPriceInput.value) || 0;
-        const driverWage = parseFloat(elements.hourlyWageInput.value) || 0;
-        const accidentCost = parseFloat(elements.accidentCostInput.value) || 0;
+        const stationaryDailyCost = parseFloat(elements.stationaryCostInput.value) || 0;
         const days = cachedData.selectedDaysCount || 30;
-        const dailyVehicleCost = AVG_MONTHLY_VEHICLE_COST / 30;
 
         // 1. Top Level Metrics
-        const idleFuelCostTotal = cachedData.idleHoursData.totalHours * IDLE_FUEL_BURN_RATE_GPH * fuelPrice;
-        const idleWageCostTotal = cachedData.idleHoursData.totalHours * driverWage;
-        const totalIdleCost = idleFuelCostTotal + idleWageCostTotal;
+        const totalIdleCost = cachedData.idleHoursData.totalHours * IDLE_FUEL_BURN_RATE_GPH * fuelPrice;
 
-        const incidentProbability = 1 / 1000;
-        const safetyCostTotal = cachedData.harshEventsData.totalCount * incidentProbability * accidentCost;
+        // Harsh Events are now just counts, no dollar value attached
+        const harshCountTotal = cachedData.harshEventsData.totalCount;
 
-        const utilCostTotal = cachedData.utilizationData.underutilizedCount * dailyVehicleCost * days;
+        const utilCostTotal = cachedData.utilizationData.underutilizedCount * stationaryDailyCost * days;
 
-        const totalSavings = totalIdleCost + safetyCostTotal + utilCostTotal;
+        const totalSavings = totalIdleCost + utilCostTotal; // Harsh driving excluded from direct dollar savings due to missing explicit logic
 
         // Update Top Cards
         elements.metricIdle.textContent = formatCurrency(totalIdleCost);
         elements.detailIdle.textContent = `${formatNumber(cachedData.idleHoursData.totalHours)} hours of excess idling`;
 
-        elements.metricSafety.textContent = formatCurrency(safetyCostTotal);
-        elements.detailSafety.textContent = `${formatNumber(cachedData.harshEventsData.totalCount)} harsh events`;
+        elements.metricSafety.textContent = formatNumber(harshCountTotal);
 
         elements.metricUtil.textContent = formatCurrency(utilCostTotal);
         elements.detailUtil.textContent = `${formatNumber(cachedData.utilizationData.underutilizedCount)} vehicles w/ no trips`;
@@ -117,6 +188,9 @@ geotab.addin.roiCalculator = function (api, state) {
         if (totalCardDetail) {
             totalCardDetail.textContent = `Over the selected ${days} days`;
         }
+
+        // Render Visual Breakdown
+        renderChart(totalIdleCost, utilCostTotal);
 
         // 2. Build Table Data
         const tbody = document.getElementById('asset-table-body');
@@ -136,18 +210,17 @@ geotab.addin.roiCalculator = function (api, state) {
 
             // Device specific math
             const devIdleHours = cachedData.idleHoursData.deviceIdling[devId] || 0;
-            const devIdleCost = (devIdleHours * IDLE_FUEL_BURN_RATE_GPH * fuelPrice) + (devIdleHours * driverWage);
+            const devIdleCost = devIdleHours * IDLE_FUEL_BURN_RATE_GPH * fuelPrice;
 
             const devHarshCount = cachedData.harshEventsData.deviceHarshCounts[devId] || 0;
-            const devSafetyCost = devHarshCount * incidentProbability * accidentCost;
 
             const isUnderutilized = cachedData.utilizationData.deviceUtilization[devId];
-            const devUtilCost = isUnderutilized ? (dailyVehicleCost * days) : 0;
+            const devUtilCost = isUnderutilized ? (stationaryDailyCost * days) : 0;
 
-            const devTotalPotentialSavings = devIdleCost + devSafetyCost + devUtilCost;
+            const devTotalPotentialSavings = devIdleCost + devUtilCost; // Exclude raw harsh counts from dollar total
 
-            // Only show rows that actually have potential savings to keep table clean
-            if (devTotalPotentialSavings > 0) {
+            // Only show rows that actually have potential savings or incidents to keep table clean
+            if (devTotalPotentialSavings > 0 || devHarshCount > 0) {
                 const tr = document.createElement('tr');
                 const groupsStr = cachedData.deviceGroupsMap[devId] || 'No Group';
 
@@ -155,7 +228,7 @@ geotab.addin.roiCalculator = function (api, state) {
                     <td>${device.name}</td>
                     <td>${groupsStr}</td>
                     <td>${formatCurrency(devIdleCost)}</td>
-                    <td>${formatCurrency(devSafetyCost)}</td>
+                    <td>${formatNumber(devHarshCount)}</td>
                     <td class="util-col">${formatCurrency(devUtilCost)}</td>
                     <td><strong>${formatCurrency(devTotalPotentialSavings)}</strong></td>
                 `;
@@ -166,7 +239,7 @@ geotab.addin.roiCalculator = function (api, state) {
                     Vehicle: device.name,
                     Groups: `"${groupsStr}"`,
                     IdleCost: devIdleCost.toFixed(2),
-                    SafetyRisk: devSafetyCost.toFixed(2),
+                    SafetyRiskCount: devHarshCount,
                     UtilizationCost: devUtilCost.toFixed(2),
                     TotalSavings: devTotalPotentialSavings.toFixed(2)
                 });
@@ -252,7 +325,7 @@ geotab.addin.roiCalculator = function (api, state) {
             return;
         }
 
-        const headers = ["Vehicle", "Groups", "Idle Cost ($)", "Safety Risk ($)", "Utilization Cost ($)", "Total Savings ($)"];
+        const headers = ["Vehicle", "Groups", "Idle Cost ($)", "Harsh Events", "Utilization Cost ($)", "Total Savings ($)"];
         let csvContent = headers.join(",") + "\n";
 
         cachedData.tableRows.forEach(row => {
@@ -260,7 +333,7 @@ geotab.addin.roiCalculator = function (api, state) {
                 `"${row.Vehicle}"`,
                 row.Groups,
                 row.IdleCost,
-                row.SafetyRisk,
+                row.SafetyRiskCount,
                 row.UtilizationCost,
                 row.TotalSavings
             ];
@@ -271,9 +344,8 @@ geotab.addin.roiCalculator = function (api, state) {
         const link = document.createElement("a");
         const url = URL.createObjectURL(blob);
 
-        const days = elements.dateRangeInput.value;
         link.setAttribute("href", url);
-        link.setAttribute("download", `ROI_Fleet_Savings_Report_${days}Days.csv`);
+        link.setAttribute("download", `ROI_Fleet_Savings_Report_${cachedData.selectedDaysCount}Days.csv`);
         link.style.visibility = 'hidden';
 
         document.body.appendChild(link);
@@ -287,8 +359,7 @@ geotab.addin.roiCalculator = function (api, state) {
     const attachListeners = () => {
         // Recalculate instantly when inputs change (no API fetch needed)
         elements.fuelPriceInput.addEventListener('input', updateCalculationsUI);
-        elements.hourlyWageInput.addEventListener('input', updateCalculationsUI);
-        elements.accidentCostInput.addEventListener('input', updateCalculationsUI);
+        elements.stationaryCostInput.addEventListener('input', updateCalculationsUI);
 
         // Fetch new data when Calculate button clicked
         elements.calculateBtn.addEventListener('click', fetchData);
