@@ -171,13 +171,12 @@ window.GeotabApiService.prototype = {
     },
 
     /**
-     * Get underutilized vehicles mapping
-     * Optimized: Just look for StatusData instead of gigantic Trip lists.
-     * Grabs Odometer point at start of period and end of period to calculate difference.
+     * Get underutilized vehicles mapping using Sub-periods (Daily, Weekly, Monthly)
+     * Grabs Odometer point at every boundary date to calculate movement over that specific period.
      */
-    getUtilizationPerDevice: async function (devices, fromDate, toDate) {
+    getUtilizationPerDevice: async function (devices, fromDate, toDate, subPeriod) {
         try {
-            // Helper to chunk multiCalls to avoid API limits (Geotab limit is usually 10,000, we use 2,000 for safety)
+            // Helper to chunk multiCalls to avoid API limits
             const chunkArray = (array, size) => {
                 const results = [];
                 for (let i = 0; i < array.length; i += size) {
@@ -196,60 +195,76 @@ window.GeotabApiService.prototype = {
                 return allResults;
             };
 
-            const fromCalls = devices.map(d => ["Get", {
-                typeName: "StatusData",
-                search: {
-                    deviceSearch: { id: d.id },
-                    diagnosticSearch: { id: "DiagnosticOdometerId" },
-                    fromDate: fromDate.toISOString()
-                },
-                resultsLimit: 1
-            }]);
+            // Generate boundary dates
+            const boundaryDates = [];
+            let curr = new Date(fromDate);
+            // Ensure we don't accidentally infinite loop on weird timezone issues
+            let failsafeCount = 0;
 
-            const toCalls = devices.map(d => ["Get", {
-                typeName: "StatusData",
-                search: {
-                    deviceSearch: { id: d.id },
-                    diagnosticSearch: { id: "DiagnosticOdometerId" },
-                    fromDate: toDate.toISOString() // First record after End Date
-                },
-                resultsLimit: 1
-            }]);
+            while (curr < toDate && failsafeCount < 1000) {
+                boundaryDates.push(new Date(curr));
+                if (subPeriod === 'Daily') curr.setDate(curr.getDate() + 1);
+                else if (subPeriod === 'Weekly') curr.setDate(curr.getDate() + 7);
+                else curr.setMonth(curr.getMonth() + 1);
+                failsafeCount++;
+            }
+            // Always push the exact end date to capture the final segment
+            boundaryDates.push(new Date(toDate));
 
-            // Execute in parallel
-            const [fromOdoResults, toOdoResults] = await Promise.all([
-                runChunkedMultiCall(fromCalls),
-                runChunkedMultiCall(toCalls)
-            ]);
-
-            const deviceUtilization = {}; // { deviceId: isUnderutilized (boolean) }
-            let underutilizedCount = 0;
-
-            devices.forEach((d, index) => {
-                // Extract odometer values (in meters)
-                const fromOdoData = fromOdoResults[index] && fromOdoResults[index].length > 0 ? fromOdoResults[index][0].data : null;
-                const toOdoData = toOdoResults[index] && toOdoResults[index].length > 0 ? toOdoResults[index][0].data : null;
-
-                let isUnderutilized = false;
-
-                if (fromOdoData !== null && toOdoData !== null) {
-                    // Calculate distance traveled in period
-                    const diffMeters = Math.abs(toOdoData - fromOdoData);
-
-                    // If difference is less than 2000 meters (2km), we consider it stationary (accounts for minor GPS drift)
-                    if (diffMeters < 2000) {
-                        isUnderutilized = true;
-                    }
-                } else {
-                    // If either point is missing entirely from Geotab historical data, assume stationary/offline
-                    isUnderutilized = true;
-                }
-
-                deviceUtilization[d.id] = isUnderutilized;
-                if (isUnderutilized) underutilizedCount++;
+            // Create a call matrix: device -> [boundary_0... boundary_N]
+            const calls = [];
+            devices.forEach(d => {
+                boundaryDates.forEach(date => {
+                    calls.push(["Get", {
+                        typeName: "StatusData",
+                        search: {
+                            deviceSearch: { id: d.id },
+                            diagnosticSearch: { id: "DiagnosticOdometerId" },
+                            fromDate: date.toISOString()
+                        },
+                        resultsLimit: 1
+                    }]);
+                });
             });
 
-            return { underutilizedCount, deviceUtilization };
+            // Execute all calls in parallel via chunking
+            const allOdoResults = await runChunkedMultiCall(calls);
+
+            const deviceUtilizationSubperiods = {}; // { deviceId: stationaryPeriodsCount }
+            let totalStationaryPeriods = 0;
+
+            let resultIndex = 0;
+            const segmentsPerDevice = boundaryDates.length;
+
+            devices.forEach(d => {
+                let stationaryCount = 0;
+
+                // Get this device's segment results
+                const deviceResults = allOdoResults.slice(resultIndex, resultIndex + segmentsPerDevice);
+
+                // Walk through periods: compare i and i+1
+                for (let i = 0; i < deviceResults.length - 1; i++) {
+                    const startOdoData = deviceResults[i] && deviceResults[i].length > 0 ? deviceResults[i][0].data : null;
+                    const endOdoData = deviceResults[i + 1] && deviceResults[i + 1].length > 0 ? deviceResults[i + 1][0].data : null;
+
+                    if (startOdoData !== null && endOdoData !== null) {
+                        const diffMeters = Math.abs(endOdoData - startOdoData);
+                        if (diffMeters < 2000) {
+                            stationaryCount++; // Did not move >= 2km in this sub-period
+                        }
+                    } else {
+                        // If missing data entirely from Geotab historical data, assume stationary/offline for this chunk
+                        stationaryCount++;
+                    }
+                }
+
+                deviceUtilizationSubperiods[d.id] = stationaryCount;
+                totalStationaryPeriods += stationaryCount;
+
+                resultIndex += segmentsPerDevice;
+            });
+
+            return { totalStationaryPeriods, deviceUtilizationSubperiods };
         } catch (e) {
             console.error("Error fetching utilization data via Odometer points", e);
             throw e;
