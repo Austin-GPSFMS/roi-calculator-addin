@@ -120,22 +120,29 @@ window.GeotabApiService.prototype = {
 
     /**
      * Get Harsh Driving event counts per device
+     * Note: We fetch each rule separately because some databases might not have 
+     * one of these rules enabled, which would cause a multiCall to fail with a 400 error.
      */
     getHarshDrivingPerDevice: async function (fromDate, toDate) {
-        const calls = [
-            ["Get", { typeName: "ExceptionEvent", search: { fromDate: fromDate.toISOString(), toDate: toDate.toISOString(), ruleSearch: { id: "RuleHardAccelerationId" } } }],
-            ["Get", { typeName: "ExceptionEvent", search: { fromDate: fromDate.toISOString(), toDate: toDate.toISOString(), ruleSearch: { id: "RuleHardBrakingId" } } }],
-            ["Get", { typeName: "ExceptionEvent", search: { fromDate: fromDate.toISOString(), toDate: toDate.toISOString(), ruleSearch: { id: "RuleHardCorneringId" } } }]
-        ];
+        const deviceHarshCounts = {}; // { deviceId: count }
+        let totalCount = 0;
 
-        try {
-            const results = await this._multiCall(calls);
-            const deviceHarshCounts = {}; // { deviceId: count }
-            let totalCount = 0;
+        const ruleIds = ["RuleHardAccelerationId", "RuleHardBrakingId", "RuleHardCorneringId"];
 
-            results.forEach(ruleEvents => {
-                if (ruleEvents) {
-                    ruleEvents.forEach(event => {
+        // Fetch each rule sequentially to prevent one missing rule from taking down the others
+        for (const ruleId of ruleIds) {
+            try {
+                const results = await this._call("Get", {
+                    typeName: "ExceptionEvent",
+                    search: {
+                        fromDate: fromDate.toISOString(),
+                        toDate: toDate.toISOString(),
+                        ruleSearch: { id: ruleId }
+                    }
+                });
+
+                if (results && Array.isArray(results)) {
+                    results.forEach(event => {
                         if (!event.device || !event.device.id) return;
                         const devId = event.device.id;
                         if (!deviceHarshCounts[devId]) deviceHarshCounts[devId] = 0;
@@ -143,13 +150,13 @@ window.GeotabApiService.prototype = {
                         totalCount++;
                     });
                 }
-            });
-
-            return { totalCount, deviceHarshCounts };
-        } catch (e) {
-            console.error("Error fetching harsh driving data", e);
-            throw e;
+            } catch (err) {
+                // If a specific rule doesn't exist (400 error) or fails, just log and continue to the next one.
+                console.warn(`Harsh driving data fetch failed for rule: ${ruleId}. Skipping.`, err);
+            }
         }
+
+        return { totalCount, deviceHarshCounts };
     },
 
     /**
