@@ -201,6 +201,41 @@ body {
     width: 100%;
 }
 
+/* Leaderboards Section */
+.leaderboards-section {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+}
+
+.leaderboard-card {
+    display: flex;
+    flex-direction: column;
+}
+
+.leaderboard-card h2 {
+    font-size: 16px;
+    margin-bottom: 16px;
+}
+
+.negative-leaderboard h2 {
+    color: var(--warning-red);
+}
+
+.positive-leaderboard h2 {
+    color: var(--success-green);
+}
+
+.leaderboard-table {
+    width: 100%;
+    margin-top: 0;
+}
+
+.leaderboard-table th,
+.leaderboard-table td {
+    padding: 8px 12px;
+}
+
 /* Loading Overlay */
 .loading-overlay {
     position: absolute;
