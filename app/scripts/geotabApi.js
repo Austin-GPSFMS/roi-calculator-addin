@@ -20,6 +20,22 @@ window.GeotabApiService.prototype = {
     },
 
     /**
+     * Helper to run chunked multiCalls to avoid Geotab limits (max 10,000, safe 2,000)
+     */
+    _runChunkedMultiCall: async function (calls, chunkSize = 2000) {
+        const chunks = [];
+        for (let i = 0; i < calls.length; i += chunkSize) {
+            chunks.push(calls.slice(i, i + chunkSize));
+        }
+        let allResults = [];
+        for (const chunk of chunks) {
+            const res = await this._multiCall(chunk);
+            allResults = allResults.concat(res);
+        }
+        return allResults;
+    },
+
+    /**
      * Helper to perform single API call
      */
     _call: function (method, params) {
@@ -94,33 +110,38 @@ window.GeotabApiService.prototype = {
     /**
      * Get Idle duration structured per device
      */
-    getIdleDurationPerDevice: async function (fromDate, toDate) {
+    getIdleDurationPerDevice: async function (devices, fromDate, toDate) {
         try {
-            const results = await this._call("Get", {
+            const calls = devices.map(d => ["Get", {
                 typeName: "ExceptionEvent",
                 search: {
+                    deviceSearch: { id: d.id },
                     fromDate: fromDate.toISOString(),
                     toDate: toDate.toISOString(),
                     ruleSearch: { id: "aU_66pnHj8EeIWFcP8CcX7Q" } // Custom Idling Rule ID
                 }
-            });
+            }]);
+
+            const allResults = await this._runChunkedMultiCall(calls);
 
             const deviceIdling = {}; // { deviceId: hours }
             let totalHours = 0;
 
-            if (results) {
-                results.forEach(event => {
-                    if (!event.device || !event.device.id) return;
-                    const devId = event.device.id;
-                    const start = new Date(event.activeFrom);
-                    const end = new Date(event.activeTo);
-                    const hours = (end.getTime() - start.getTime()) / 3600000;
+            allResults.forEach(results => {
+                if (results && Array.isArray(results)) {
+                    results.forEach(event => {
+                        if (!event.device || !event.device.id) return;
+                        const devId = event.device.id;
+                        const start = new Date(event.activeFrom);
+                        const end = new Date(event.activeTo);
+                        const hours = (end.getTime() - start.getTime()) / 3600000;
 
-                    if (!deviceIdling[devId]) deviceIdling[devId] = 0;
-                    deviceIdling[devId] += hours;
-                    totalHours += hours;
-                });
-            }
+                        if (!deviceIdling[devId]) deviceIdling[devId] = 0;
+                        deviceIdling[devId] += hours;
+                        totalHours += hours;
+                    });
+                }
+            });
 
             return { totalHours, deviceIdling };
         } catch (e) {
@@ -134,35 +155,38 @@ window.GeotabApiService.prototype = {
      * Note: We fetch each rule separately because some databases might not have 
      * one of these rules enabled, which would cause a multiCall to fail with a 400 error.
      */
-    getHarshDrivingPerDevice: async function (fromDate, toDate) {
+    getHarshDrivingPerDevice: async function (devices, fromDate, toDate) {
         const deviceHarshCounts = {}; // { deviceId: count }
         let totalCount = 0;
 
         const ruleIds = ["RuleJackrabbitStartsId", "RuleHarshBrakingId", "RuleHarshCorneringId"];
 
-        // Fetch each rule sequentially to prevent one missing rule from taking down the others
         for (const ruleId of ruleIds) {
             try {
-                const results = await this._call("Get", {
+                const calls = devices.map(d => ["Get", {
                     typeName: "ExceptionEvent",
                     search: {
+                        deviceSearch: { id: d.id },
                         fromDate: fromDate.toISOString(),
                         toDate: toDate.toISOString(),
                         ruleSearch: { id: ruleId }
                     }
-                });
+                }]);
 
-                if (results && Array.isArray(results)) {
-                    results.forEach(event => {
-                        if (!event.device || !event.device.id) return;
-                        const devId = event.device.id;
-                        if (!deviceHarshCounts[devId]) deviceHarshCounts[devId] = 0;
-                        deviceHarshCounts[devId]++;
-                        totalCount++;
-                    });
-                }
+                const allResults = await this._runChunkedMultiCall(calls);
+
+                allResults.forEach(results => {
+                    if (results && Array.isArray(results)) {
+                        results.forEach(event => {
+                            if (!event.device || !event.device.id) return;
+                            const devId = event.device.id;
+                            if (!deviceHarshCounts[devId]) deviceHarshCounts[devId] = 0;
+                            deviceHarshCounts[devId]++;
+                            totalCount++;
+                        });
+                    }
+                });
             } catch (err) {
-                // If a specific rule doesn't exist (400 error) or fails, just log and continue to the next one.
                 console.warn(`Harsh driving data fetch failed for rule: ${ruleId}. Skipping.`, err);
             }
         }
@@ -176,25 +200,6 @@ window.GeotabApiService.prototype = {
      */
     getUtilizationPerDevice: async function (devices, fromDate, toDate, subPeriod) {
         try {
-            // Helper to chunk multiCalls to avoid API limits
-            const chunkArray = (array, size) => {
-                const results = [];
-                for (let i = 0; i < array.length; i += size) {
-                    results.push(array.slice(i, i + size));
-                }
-                return results;
-            };
-
-            const runChunkedMultiCall = async (calls) => {
-                const chunks = chunkArray(calls, 2000);
-                let allResults = [];
-                for (const chunk of chunks) {
-                    const res = await this._multiCall(chunk);
-                    allResults = allResults.concat(res);
-                }
-                return allResults;
-            };
-
             // Generate boundary dates
             const boundaryDates = [];
             let curr = new Date(fromDate);
@@ -228,7 +233,7 @@ window.GeotabApiService.prototype = {
             });
 
             // Execute all calls in parallel via chunking
-            const allOdoResults = await runChunkedMultiCall(calls);
+            const allOdoResults = await this._runChunkedMultiCall(calls);
 
             const deviceUtilizationSubperiods = {}; // { deviceId: stationaryPeriodsCount }
             let totalStationaryPeriods = 0;
