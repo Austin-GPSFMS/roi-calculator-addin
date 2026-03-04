@@ -33,13 +33,18 @@ window.GeotabApiService.prototype = {
     },
 
     /**
-     * Get active devices without massive historical lookback to save memory
+     * Get active devices without massive historical lookback to save memory,
+     * filtering out untracked (historic/archived/terminated) devices.
      */
     getDevices: async function () {
         try {
-            return await this._call("Get", {
+            const devices = await this._call("Get", {
                 typeName: "Device"
             });
+
+            // Only keep devices actively tracked (their activeTo date is in the future)
+            const now = new Date();
+            return devices.filter(d => d.activeTo && new Date(d.activeTo) > now);
         } catch (e) {
             console.error("Error fetching devices", e);
             throw e;
@@ -47,7 +52,7 @@ window.GeotabApiService.prototype = {
     },
 
     /**
-     * Get Device Groups map
+     * Get Device Groups map and raw groups
      */
     getDeviceGroupsMap: async function () {
         try {
@@ -69,14 +74,20 @@ window.GeotabApiService.prototype = {
                 if (d.groups) {
                     d.groups.forEach(g => {
                         if (groupMap[g.id]) deviceGroups.push(groupMap[g.id]);
+                        // Also push the exact IDs so we can filter later easily
+                        if (!deviceGroupMap[d.id + '_ids']) deviceGroupMap[d.id + '_ids'] = [];
+                        deviceGroupMap[d.id + '_ids'].push(g.id);
                     });
                 }
                 deviceGroupMap[d.id] = deviceGroups.join(", ");
             });
-            return deviceGroupMap;
+            return {
+                map: deviceGroupMap,
+                rawGroups: groups
+            };
         } catch (e) {
             console.error("Error fetching groups", e);
-            return {};
+            return { map: {}, rawGroups: [] };
         }
     },
 
