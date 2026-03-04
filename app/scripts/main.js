@@ -9,7 +9,8 @@ geotab.addin.roiCalculator = function (api, state) {
 
     // DOM Elements
     const elements = {
-        dateRangeInput: document.getElementById('date-range'),
+        dateFromInput: document.getElementById('date-from'),
+        dateToInput: document.getElementById('date-to'),
         fuelPriceInput: document.getElementById('fuel-price'),
         hourlyWageInput: document.getElementById('hourly-wage'),
         accidentCostInput: document.getElementById('accident-cost'),
@@ -32,12 +33,34 @@ geotab.addin.roiCalculator = function (api, state) {
 
     // Add-in state
     let cachedData = {
+        selectedDaysCount: 30, // Default for first load
         devices: [],
         deviceGroupsMap: {},
         idleHoursData: { totalHours: 0, deviceIdling: {} },
         harshEventsData: { totalCount: 0, deviceHarshCounts: {} },
         utilizationData: { underutilizedCount: 0, deviceUtilization: {} },
         tableRows: [] // Used for export
+    };
+
+    /**
+     * Set default dates in UI (Last 30 days)
+     */
+    const setDefaultDates = () => {
+        const today = new Date();
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(today.getDate() - 30);
+
+        if (elements.dateToInput) elements.dateToInput.valueAsDate = today;
+        if (elements.dateFromInput) elements.dateFromInput.valueAsDate = thirtyDaysAgo;
+    };
+
+    /**
+     * Calculate days between two Dates
+     */
+    const calculateDaysBetween = (from, to) => {
+        const diffTime = Math.abs(to - from);
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        return diffDays > 0 ? diffDays : 1;
     };
 
     /**
@@ -62,7 +85,7 @@ geotab.addin.roiCalculator = function (api, state) {
         const fuelPrice = parseFloat(elements.fuelPriceInput.value) || 0;
         const driverWage = parseFloat(elements.hourlyWageInput.value) || 0;
         const accidentCost = parseFloat(elements.accidentCostInput.value) || 0;
-        const days = parseInt(elements.dateRangeInput.value) || 30;
+        const days = cachedData.selectedDaysCount || 30;
         const dailyVehicleCost = AVG_MONTHLY_VEHICLE_COST / 30;
 
         // 1. Top Level Metrics
@@ -88,6 +111,12 @@ geotab.addin.roiCalculator = function (api, state) {
         elements.detailUtil.textContent = `${formatNumber(cachedData.utilizationData.underutilizedCount)} vehicles w/ no trips`;
 
         elements.metricTotal.textContent = formatCurrency(totalSavings);
+
+        // Update detail text to reflect dynamic dates
+        const totalCardDetail = document.querySelector('.total-card .detail');
+        if (totalCardDetail) {
+            totalCardDetail.textContent = `Over the selected ${days} days`;
+        }
 
         // 2. Build Table Data
         const tbody = document.getElementById('asset-table-body');
@@ -153,10 +182,21 @@ geotab.addin.roiCalculator = function (api, state) {
      * Fetches raw data from Geotab API using the selected date range
      */
     const fetchData = async () => {
-        const days = parseInt(elements.dateRangeInput.value) || 30;
-        const toDate = new Date();
-        const fromDate = new Date();
-        fromDate.setDate(toDate.getDate() - days);
+        let fromDate = elements.dateFromInput.valueAsDate;
+        let toDate = elements.dateToInput.valueAsDate;
+
+        // Fallback if inputs are invalid/empty
+        if (!fromDate || !toDate) {
+            toDate = new Date();
+            fromDate = new Date();
+            fromDate.setDate(toDate.getDate() - 30);
+
+            elements.dateToInput.valueAsDate = toDate;
+            elements.dateFromInput.valueAsDate = fromDate;
+        }
+
+        // Calculate days for UI math
+        const days = calculateDaysBetween(fromDate, toDate);
 
         // Show loading state
         elements.loadingOverlay.classList.remove('hidden');
@@ -250,8 +290,7 @@ geotab.addin.roiCalculator = function (api, state) {
         elements.hourlyWageInput.addEventListener('input', updateCalculationsUI);
         elements.accidentCostInput.addEventListener('input', updateCalculationsUI);
 
-        // Fetch new data when Date Range changes OR Calculate button clicked
-        elements.dateRangeInput.addEventListener('change', fetchData);
+        // Fetch new data when Calculate button clicked
         elements.calculateBtn.addEventListener('click', fetchData);
 
         // Export Dropdown Logic
@@ -285,6 +324,7 @@ geotab.addin.roiCalculator = function (api, state) {
             // Initialize the API Service
             apiService = new window.GeotabApiService(api);
 
+            setDefaultDates();
             attachListeners();
 
             if (callback) callback();
