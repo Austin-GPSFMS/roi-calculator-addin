@@ -19,54 +19,49 @@
                 <p class="subtitle">Discover potential fleet savings by addressing idling, harsh driving, and
                     underutilized assets.</p>
             </div>
-        </header>
 
-        <div class="calculator-grid">
-            <!-- Left Panel: Settings/Inputs -->
-            <section class="panel settings-panel">
-                <h2>Settings</h2>
-
-                <div class="form-group">
-                    <label>Target Date Range</label>
-                    <div class="date-picker-group">
-                        <div class="date-input-container">
-                            <label for="date-from" class="small-label">From</label>
-                            <input type="date" id="date-from" class="geotab-input date-input">
-                        </div>
-                        <div class="date-input-container">
-                            <label for="date-to" class="small-label">To</label>
-                            <input type="date" id="date-to" class="geotab-input date-input">
-                        </div>
+            <!-- Top Filter Bar -->
+            <div class="filter-bar">
+                <div class="filter-group date-picker-group">
+                    <div class="date-input-container">
+                        <label for="date-from" class="small-label">From</label>
+                        <input type="date" id="date-from" class="geotab-input date-input">
+                    </div>
+                    <div class="date-input-container">
+                        <label for="date-to" class="small-label">To</label>
+                        <input type="date" id="date-to" class="geotab-input date-input">
                     </div>
                 </div>
 
-                <div class="form-group">
-                    <label for="fuel-price">Fuel Price ($/gal)</label>
+                <div class="filter-group">
+                    <label for="fuel-price" class="small-label">Fuel Price ($/gal)</label>
                     <input type="number" id="fuel-price" class="geotab-input" value="4.00" step="0.01" min="0">
                 </div>
 
-                <div class="form-group">
-                    <label for="hourly-wage">Driver Hourly Wage ($/hr)</label>
-                    <input type="number" id="hourly-wage" class="geotab-input" value="25.00" step="0.50" min="0">
+                <div class="filter-group">
+                    <label for="stationary-cost" class="small-label">Stationary Asset Cost ($/day)</label>
+                    <input type="number" id="stationary-cost" class="geotab-input" value="15.00" step="1.00" min="0">
                 </div>
 
-                <div class="form-group">
-                    <label for="accident-cost">Avg Cost per Accident ($)</label>
-                    <input type="number" id="accident-cost" class="geotab-input" value="1500" step="50" min="0">
+                <button id="calculate-btn" class="geotab-button active">Update Results</button>
+            </div>
+        </header>
+
+        <div id="loading-overlay" class="loading-overlay hidden">
+            <div class="spinner"></div>
+            <p>Fetching Fleet Data...</p>
+        </div>
+
+        <div class="dashboard-content">
+            <!-- Top Stats Row (Horizontal) -->
+            <section class="top-stats-row">
+                <div class="result-card primary-card">
+                    <h3>Total Potential Savings</h3>
+                    <div class="total-metric" id="metric-total-savings">$0</div>
+                    <p class="detail">Over the selected date range</p>
                 </div>
 
-                <button id="calculate-btn" class="geotab-button active">Calculate ROI</button>
-            </section>
-
-            <!-- Right Panel: Results -->
-            <section class="panel results-panel">
-                <h2>Potential Savings</h2>
-                <div id="loading-overlay" class="loading-overlay hidden">
-                    <div class="spinner"></div>
-                    <p>Fetching Fleet Data...</p>
-                </div>
-
-                <div class="results-grid">
+                <div class="secondary-stats-grid">
                     <div class="result-card">
                         <h3>Excess Idling Cost</h3>
                         <div class="metric" id="metric-idle-cost">$0</div>
@@ -74,62 +69,65 @@
                     </div>
 
                     <div class="result-card">
-                        <h3>Harsh Driving Risk</h3>
-                        <div class="metric" id="metric-safety-risk">$0</div>
-                        <p class="detail" id="detail-safety">0 harsh events</p>
+                        <h3>Harsh Driving Events</h3>
+                        <div class="metric" id="metric-safety-risk">0</div>
+                        <p class="detail" id="detail-safety">Instances across fleet</p>
                     </div>
 
                     <div class="result-card">
                         <h3>Underutilized Assets</h3>
                         <div class="metric" id="metric-utilization">$0</div>
-                        <p class="detail" id="detail-util">0 vehicles with < 10 miles</p>
+                        <p class="detail" id="detail-util">0 vehicles with no trips</p>
                     </div>
-                </div>
-
-                <div class="total-card">
-                    <h3>Total Potential Savings</h3>
-                    <div class="total-metric" id="metric-total-savings">$0</div>
-                    <p class="detail">Over the selected date range</p>
                 </div>
             </section>
-        </div>
 
-        <!-- Asset Details Section -->
-        <div class="asset-details-section">
-            <div class="section-header">
-                <h2>Asset Savings Breakdown</h2>
-                <div class="report-dropdown">
-                    <button class="geotab-button secondary dropdown-toggle" id="export-btn">Report <span
-                            class="arrow-down"></span></button>
-                    <div class="dropdown-menu hidden" id="export-menu">
-                        <button class="dropdown-item" id="export-excel-btn">Export to Excel</button>
+            <!-- Chart Section -->
+            <section class="chart-section panel">
+                <h2>Savings Breakdown</h2>
+                <div class="chart-container">
+                    <canvas id="savingsChart"></canvas>
+                </div>
+            </section>
+
+            <!-- Asset Details Section -->
+            <div class="asset-details-section">
+                <div class="section-header">
+                    <h2>Asset Savings Breakdown</h2>
+                    <div class="report-dropdown">
+                        <button class="geotab-button secondary dropdown-toggle" id="export-btn">Report <span
+                                class="arrow-down"></span></button>
+                        <div class="dropdown-menu hidden" id="export-menu">
+                            <button class="dropdown-item" id="export-excel-btn">Export to Excel</button>
+                        </div>
                     </div>
                 </div>
-            </div>
 
-            <div class="table-container">
-                <table class="geotab-table" id="asset-table">
-                    <thead>
-                        <tr>
-                            <th>Vehicle Name</th>
-                            <th>Groups</th>
-                            <th>Idle Cost ($)</th>
-                            <th>Safety Risk ($)</th>
-                            <th class="util-col">Utilization ($)</th>
-                            <th>Total Potential Savings ($)</th>
-                        </tr>
-                    </thead>
-                    <tbody id="asset-table-body">
-                        <!-- Rows will be injected here dynamically -->
-                        <tr>
-                            <td colspan="6" class="empty-state">Click 'Calculate ROI' to load data</td>
-                        </tr>
-                    </tbody>
-                </table>
+                <div class="table-container">
+                    <table class="geotab-table" id="asset-table">
+                        <thead>
+                            <tr>
+                                <th>Vehicle Name</th>
+                                <th>Groups</th>
+                                <th>Idle Cost ($)</th>
+                                <th>Harsh Events</th>
+                                <th class="util-col">Utilization ($)</th>
+                                <th>Total Potential Savings ($)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="asset-table-body">
+                            <!-- Rows will be injected here dynamically -->
+                            <tr>
+                                <td colspan="6" class="empty-state">Click 'Update Results' to load data</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="scripts/geotabApi.js"></script>
     <script src="scripts/main.js"></script>
 </body>
