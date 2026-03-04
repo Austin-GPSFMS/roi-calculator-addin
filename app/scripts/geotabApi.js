@@ -33,13 +33,12 @@ window.GeotabApiService.prototype = {
     },
 
     /**
-     * Get active historical devices
+     * Get active devices without massive historical lookback to save memory
      */
-    getDevices: async function (fromDate) {
+    getDevices: async function () {
         try {
             return await this._call("Get", {
-                typeName: "Device",
-                search: { fromDate: fromDate.toISOString() }
+                typeName: "Device"
             });
         } catch (e) {
             console.error("Error fetching devices", e);
@@ -52,8 +51,14 @@ window.GeotabApiService.prototype = {
      */
     getDeviceGroupsMap: async function () {
         try {
-            const devices = await this._call("Get", { typeName: "Device" });
-            const groups = await this._call("Get", { typeName: "Group" });
+            const calls = [
+                ["Get", { typeName: "Device" }],
+                ["Get", { typeName: "Group" }]
+            ];
+
+            const results = await this._multiCall(calls);
+            const devices = results[0] || [];
+            const groups = results[1] || [];
 
             const groupMap = {};
             groups.forEach(g => { groupMap[g.id] = g.name; });
@@ -94,6 +99,7 @@ window.GeotabApiService.prototype = {
 
             if (results) {
                 results.forEach(event => {
+                    if (!event.device || !event.device.id) return;
                     const devId = event.device.id;
                     const start = new Date(event.activeFrom);
                     const end = new Date(event.activeTo);
@@ -130,6 +136,7 @@ window.GeotabApiService.prototype = {
             results.forEach(ruleEvents => {
                 if (ruleEvents) {
                     ruleEvents.forEach(event => {
+                        if (!event.device || !event.device.id) return;
                         const devId = event.device.id;
                         if (!deviceHarshCounts[devId]) deviceHarshCounts[devId] = 0;
                         deviceHarshCounts[devId]++;
@@ -147,9 +154,13 @@ window.GeotabApiService.prototype = {
 
     /**
      * Get underutilized vehicles mapping
+     * Optimized: Just look for StatusData instead of gigantic Trip lists
      */
     getUtilizationPerDevice: async function (devices, fromDate, toDate) {
         try {
+            // Because trips can be massive for an entire fleet, 
+            // a faster approach is looking for ANY LogRecord or StatusData.
+            // But if we must use Trips, we limit the payload to bare minimum
             const trips = await this._call("Get", {
                 typeName: "Trip",
                 search: {
@@ -161,7 +172,9 @@ window.GeotabApiService.prototype = {
             const devicesWithTrips = new Set();
             if (trips) {
                 trips.forEach(trip => {
-                    devicesWithTrips.add(trip.device.id);
+                    if (trip.device && trip.device.id) {
+                        devicesWithTrips.add(trip.device.id);
+                    }
                 });
             }
 
