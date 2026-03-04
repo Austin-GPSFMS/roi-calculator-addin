@@ -11,7 +11,9 @@ geotab.addin.roiCalculator = function (api, state) {
     const elements = {
         dateFromInput: document.getElementById('date-from'),
         dateToInput: document.getElementById('date-to'),
+        groupFilterInput: document.getElementById('group-filter'),
         fuelPriceInput: document.getElementById('fuel-price'),
+        harshCostInput: document.getElementById('harsh-cost'),
         stationaryCostInput: document.getElementById('stationary-cost'),
         calculateBtn: document.getElementById('calculate-btn'),
         loadingOverlay: document.getElementById('loading-overlay'),
@@ -25,6 +27,10 @@ geotab.addin.roiCalculator = function (api, state) {
         detailUtil: document.getElementById('detail-util'),
         metricTotal: document.getElementById('metric-total-savings'),
 
+        // Leaderboards
+        leaderboardWorstBody: document.getElementById('leaderboard-worst-body'),
+        leaderboardBestBody: document.getElementById('leaderboard-best-body'),
+
         // Chart container
         savingsChartCanvas: document.getElementById('savingsChart')
     };
@@ -36,7 +42,9 @@ geotab.addin.roiCalculator = function (api, state) {
     let cachedData = {
         selectedDaysCount: 30, // Default for first load
         devices: [],
-        deviceGroupsMap: {},
+        deviceGroupsMap: {}, // Stores deviceId -> groupName string
+        deviceGroupIdsMap: {}, // Stores deviceId -> [groupIds]
+        rawGroups: [],
         idleHoursData: { totalHours: 0, deviceIdling: {} },
         harshEventsData: { totalCount: 0, deviceHarshCounts: {} },
         utilizationData: { underutilizedCount: 0, deviceUtilization: {} },
@@ -84,7 +92,7 @@ geotab.addin.roiCalculator = function (api, state) {
     /**
      * Renders or updates Chart.js instance with new totals
      */
-    const renderChart = (idleCost, utilCost) => {
+    const renderChart = (idleCost, safetyCost, utilCost) => {
         const ctx = elements.savingsChartCanvas.getContext('2d');
 
         const data = {
@@ -94,6 +102,12 @@ geotab.addin.roiCalculator = function (api, state) {
                     label: 'Excess Idling Cost',
                     data: [idleCost],
                     backgroundColor: 'rgba(37, 83, 153, 0.8)', // Geotab Blue
+                    borderWidth: 0
+                },
+                {
+                    label: 'Harsh Driving Cost',
+                    data: [safetyCost],
+                    backgroundColor: 'rgba(250, 162, 27, 0.8)', // Orange
                     borderWidth: 0
                 },
                 {
@@ -160,26 +174,48 @@ geotab.addin.roiCalculator = function (api, state) {
         // Inputs
         const fuelPrice = parseFloat(elements.fuelPriceInput.value) || 0;
         const stationaryDailyCost = parseFloat(elements.stationaryCostInput.value) || 0;
+        const harshEventCost = parseFloat(elements.harshCostInput.value) || 0;
         const days = cachedData.selectedDaysCount || 30;
+        const selectedGroupId = elements.groupFilterInput.value;
+
+        // Filter Devices Globally based on group
+        let filteredDevices = cachedData.devices;
+        if (selectedGroupId && selectedGroupId !== 'all') {
+            filteredDevices = cachedData.devices.filter(d => {
+                const deviceGroupIds = cachedData.deviceGroupsMap[d.id + '_ids'] || [];
+                return deviceGroupIds.includes(selectedGroupId);
+            });
+        }
+
+        // Recalculate Totals based on filtered devices
+        let totalIdleHours = 0;
+        let totalHarshCount = 0;
+        let totalUnderutilizedCount = 0;
+
+        filteredDevices.forEach(d => {
+            totalIdleHours += cachedData.idleHoursData.deviceIdling[d.id] || 0;
+            totalHarshCount += cachedData.harshEventsData.deviceHarshCounts[d.id] || 0;
+            if (cachedData.utilizationData.deviceUtilization[d.id]) {
+                totalUnderutilizedCount++;
+            }
+        });
 
         // 1. Top Level Metrics
-        const totalIdleCost = cachedData.idleHoursData.totalHours * IDLE_FUEL_BURN_RATE_GPH * fuelPrice;
+        const totalIdleCost = totalIdleHours * IDLE_FUEL_BURN_RATE_GPH * fuelPrice;
+        const totalSafetyCost = totalHarshCount * harshEventCost;
+        const utilCostTotal = totalUnderutilizedCount * stationaryDailyCost * days;
 
-        // Harsh Events are now just counts, no dollar value attached
-        const harshCountTotal = cachedData.harshEventsData.totalCount;
-
-        const utilCostTotal = cachedData.utilizationData.underutilizedCount * stationaryDailyCost * days;
-
-        const totalSavings = totalIdleCost + utilCostTotal; // Harsh driving excluded from direct dollar savings due to missing explicit logic
+        const totalSavings = totalIdleCost + totalSafetyCost + utilCostTotal; // Now includes Safety Config Cost
 
         // Update Top Cards
         elements.metricIdle.textContent = formatCurrency(totalIdleCost);
-        elements.detailIdle.textContent = `${formatNumber(cachedData.idleHoursData.totalHours)} hours of excess idling`;
+        elements.detailIdle.textContent = `${formatNumber(totalIdleHours)} hours of excess idling`;
 
-        elements.metricSafety.textContent = formatNumber(harshCountTotal);
+        elements.metricSafety.textContent = formatCurrency(totalSafetyCost);
+        elements.detailSafety.textContent = `${formatNumber(totalHarshCount)} events across fleet`;
 
         elements.metricUtil.textContent = formatCurrency(utilCostTotal);
-        elements.detailUtil.textContent = `${formatNumber(cachedData.utilizationData.underutilizedCount)} vehicles w/ no trips`;
+        elements.detailUtil.textContent = `${formatNumber(totalUnderutilizedCount)} vehicles w/ no trips`;
 
         elements.metricTotal.textContent = formatCurrency(totalSavings);
 
@@ -190,22 +226,23 @@ geotab.addin.roiCalculator = function (api, state) {
         }
 
         // Render Visual Breakdown
-        renderChart(totalIdleCost, utilCostTotal);
+        renderChart(totalIdleCost, totalSafetyCost, utilCostTotal);
 
-        // 2. Build Table Data
+        // 2. Build Table & Leaderboard Data
         const tbody = document.getElementById('asset-table-body');
         tbody.innerHTML = ''; // Clear
         cachedData.tableRows = [];
 
-        if (!cachedData.devices || cachedData.devices.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No devices found in this period.</td></tr>`;
+        if (!filteredDevices || filteredDevices.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No devices found for selected criteria.</td></tr>`;
+            elements.leaderboardWorstBody.innerHTML = `<tr><td colspan="2" class="empty-state">No data</td></tr>`;
+            elements.leaderboardBestBody.innerHTML = `<tr><td colspan="2" class="empty-state">No data</td></tr>`;
             return;
         }
 
-        // Sort devices alphabetically
-        const sortedDevices = [...cachedData.devices].sort((a, b) => a.name.localeCompare(b.name));
+        const deviceCosts = [];
 
-        sortedDevices.forEach(device => {
+        filteredDevices.forEach(device => {
             const devId = device.id;
 
             // Device specific math
@@ -213,41 +250,83 @@ geotab.addin.roiCalculator = function (api, state) {
             const devIdleCost = devIdleHours * IDLE_FUEL_BURN_RATE_GPH * fuelPrice;
 
             const devHarshCount = cachedData.harshEventsData.deviceHarshCounts[devId] || 0;
+            const devSafetyCost = devHarshCount * harshEventCost;
 
             const isUnderutilized = cachedData.utilizationData.deviceUtilization[devId];
             const devUtilCost = isUnderutilized ? (stationaryDailyCost * days) : 0;
 
-            const devTotalPotentialSavings = devIdleCost + devUtilCost; // Exclude raw harsh counts from dollar total
+            const devTotalPotentialSavings = devIdleCost + devSafetyCost + devUtilCost;
 
-            // Only show rows that actually have potential savings or incidents to keep table clean
-            if (devTotalPotentialSavings > 0 || devHarshCount > 0) {
+            deviceCosts.push({
+                device,
+                devIdleCost,
+                devHarshCount,
+                devSafetyCost,
+                devUtilCost,
+                devTotalPotentialSavings
+            });
+        });
+
+        // Render Tables
+        // ------------------
+
+        // Asset Table (Alphabetical)
+        const sortedAlphabetical = [...deviceCosts].sort((a, b) => a.device.name.localeCompare(b.device.name));
+
+        sortedAlphabetical.forEach(data => {
+            if (data.devTotalPotentialSavings > 0 || data.devHarshCount > 0) {
                 const tr = document.createElement('tr');
-                const groupsStr = cachedData.deviceGroupsMap[devId] || 'No Group';
+                const groupsStr = cachedData.deviceGroupsMap[data.device.id] || 'No Group';
 
                 tr.innerHTML = `
-                    <td>${device.name}</td>
+                    <td>${data.device.name}</td>
                     <td>${groupsStr}</td>
-                    <td>${formatCurrency(devIdleCost)}</td>
-                    <td>${formatNumber(devHarshCount)}</td>
-                    <td class="util-col">${formatCurrency(devUtilCost)}</td>
-                    <td><strong>${formatCurrency(devTotalPotentialSavings)}</strong></td>
+                    <td>${formatCurrency(data.devIdleCost)}</td>
+                    <td>${formatNumber(data.devHarshCount)}</td>
+                    <td class="util-col">${formatCurrency(data.devUtilCost)}</td>
+                    <td><strong>${formatCurrency(data.devTotalPotentialSavings)}</strong></td>
                 `;
                 tbody.appendChild(tr);
 
                 // Save for export format (raw numbers for CSV)
                 cachedData.tableRows.push({
-                    Vehicle: device.name,
+                    Vehicle: data.device.name,
                     Groups: `"${groupsStr}"`,
-                    IdleCost: devIdleCost.toFixed(2),
-                    SafetyRiskCount: devHarshCount,
-                    UtilizationCost: devUtilCost.toFixed(2),
-                    TotalSavings: devTotalPotentialSavings.toFixed(2)
+                    IdleCost: data.devIdleCost.toFixed(2),
+                    SafetyRiskCount: data.devHarshCount,
+                    UtilizationCost: data.devUtilCost.toFixed(2),
+                    TotalSavings: data.devTotalPotentialSavings.toFixed(2)
                 });
             }
         });
 
         if (cachedData.tableRows.length === 0) {
             tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No actionable savings found for selected criteria.</td></tr>`;
+        }
+
+        // Leaderboards (Cost Value)
+        const sortedByCost = [...deviceCosts].sort((a, b) => b.devTotalPotentialSavings - a.devTotalPotentialSavings);
+
+        // Worst 5
+        const worst5 = sortedByCost.slice(0, 5);
+        elements.leaderboardWorstBody.innerHTML = worst5.map(d => `
+            <tr>
+                <td>${d.device.name}</td>
+                <td style="text-align: right;"><strong>${formatCurrency(d.devTotalPotentialSavings)}</strong></td>
+            </tr>
+        `).join('');
+
+        // Best 5
+        const best5 = sortedByCost.filter(d => d.devTotalPotentialSavings > 0).reverse().slice(0, 5);
+        if (best5.length === 0) {
+            elements.leaderboardBestBody.innerHTML = `<tr><td colspan="2" class="empty-state">No devices with measured costs</td></tr>`;
+        } else {
+            elements.leaderboardBestBody.innerHTML = best5.map(d => `
+                <tr>
+                    <td>${d.device.name}</td>
+                    <td style="text-align: right;"><strong>${formatCurrency(d.devTotalPotentialSavings)}</strong></td>
+                </tr>
+            `).join('');
         }
     };
 
@@ -282,7 +361,7 @@ geotab.addin.roiCalculator = function (api, state) {
             const devices = await apiService.getDevices();
 
             console.log("ROI Calculator: Fetching groups map...");
-            const groupMap = await apiService.getDeviceGroupsMap();
+            const groupData = await apiService.getDeviceGroupsMap();
 
             console.log("ROI Calculator: Fetching idle duration...");
             const idleHoursData = await apiService.getIdleDurationPerDevice(fromDate, toDate);
@@ -296,12 +375,24 @@ geotab.addin.roiCalculator = function (api, state) {
             // Cache data
             cachedData = {
                 devices,
-                deviceGroupsMap: groupMap,
+                deviceGroupsMap: groupData.map,
+                rawGroups: groupData.rawGroups,
                 idleHoursData,
                 harshEventsData,
                 utilizationData,
                 tableRows: []
             };
+
+            // Populate Dropdown if not already grouped
+            if (elements.groupFilterInput.options.length <= 1) {
+                const sortedGroups = [...groupData.rawGroups].sort((a, b) => a.name.localeCompare(b.name));
+                sortedGroups.forEach(g => {
+                    const opt = document.createElement('option');
+                    opt.value = g.id;
+                    opt.textContent = g.name;
+                    elements.groupFilterInput.appendChild(opt);
+                });
+            }
 
             // Calculate and display
             updateCalculationsUI();
@@ -360,6 +451,8 @@ geotab.addin.roiCalculator = function (api, state) {
         // Recalculate instantly when inputs change (no API fetch needed)
         elements.fuelPriceInput.addEventListener('input', updateCalculationsUI);
         elements.stationaryCostInput.addEventListener('input', updateCalculationsUI);
+        elements.harshCostInput.addEventListener('input', updateCalculationsUI);
+        elements.groupFilterInput.addEventListener('change', updateCalculationsUI);
 
         // Fetch new data when Calculate button clicked
         elements.calculateBtn.addEventListener('click', fetchData);
