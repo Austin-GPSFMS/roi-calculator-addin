@@ -454,204 +454,227 @@ geotab.addin.roiCalculator = function (api, state) {
         // Show loading state
         elements.loadingOverlay.classList.remove('hidden');
 
+        let devices = [];
+        let groupData = { map: {}, rawGroups: [] };
+        let idleHoursData = { totalHours: 0, deviceIdling: {}, trendData: [], bucketSize: 'monthly' };
+        let harshEventsData = { totalCount: 0, deviceHarshCounts: {}, trendData: [], bucketSize: 'monthly' };
+        let utilizationData = { underutilizedCount: 0, deviceUtilization: {} };
+
         try {
             console.log(`ROI Calculator: Fetching data for past ${days} days...`);
 
-            // Fetch Devices & Groups sequentially to avoid MyGeotab API limits (concurrent large pulls drop connections)
             console.log("ROI Calculator: Fetching devices...");
-            const devices = await apiService.getDevices();
+            devices = await apiService.getDevices();
+
+            if (devices.length === 0) {
+                console.warn("ROI Calculator: No active devices returned.");
+            }
 
             console.log("ROI Calculator: Fetching groups map...");
-            const groupData = await apiService.getDeviceGroupsMap();
+            groupData = await apiService.getDeviceGroupsMap();
+        } catch (criticalError) {
+            console.error("ROI Calculator: Critical error fetching devices/groups", criticalError);
+            elements.loadingOverlay.classList.add('hidden');
+            return; // Can't proceed without device list
+        }
 
+        // Fetch data in sequence, each independently resilient
+        try {
             console.log("ROI Calculator: Fetching idle duration...");
-            const idleHoursData = await apiService.getIdleDurationPerDevice(devices, fromDate, toDate);
+            idleHoursData = await apiService.getIdleDurationPerDevice(devices, fromDate, toDate);
+        } catch (e) { console.warn("ROI Calculator: Idle data skipped", e); }
 
+        try {
             console.log("ROI Calculator: Fetching harsh driving data...");
-            const harshEventsData = await apiService.getHarshDrivingPerDevice(devices, fromDate, toDate);
+            harshEventsData = await apiService.getHarshDrivingPerDevice(devices, fromDate, toDate);
+        } catch (e) { console.warn("ROI Calculator: Harsh data skipped", e); }
 
+        try {
             console.log("ROI Calculator: Fetching trip utilization...");
-            const utilizationData = await apiService.getUtilizationPerDevice(devices, fromDate, toDate);
+            utilizationData = await apiService.getUtilizationPerDevice(devices, fromDate, toDate);
+        } catch (e) { console.warn("ROI Calculator: Utilization data skipped", e); }
 
-            // Cache data
-            cachedData = {
-                devices,
-                deviceGroupsMap: groupData.map,
-                rawGroups: groupData.rawGroups,
-                idleHoursData,
-                harshEventsData,
-                utilizationData,
-                tableRows: []
+        // Always cache and render what we have
+        cachedData = {
+            selectedDaysCount: days,
+            devices,
+            deviceGroupsMap: groupData.map,
+            rawGroups: groupData.rawGroups,
+            idleHoursData,
+            harshEventsData,
+            utilizationData,
+            tableRows: []
+        };
+
+
+        // Populate Dropdown Hierarchically if not already built
+        if (elements.groupFilterInput.options.length <= 1) {
+            elements.groupFilterInput.innerHTML = '<option value="all">All Groups</option>'; // reset
+
+            const rawGroups = groupData.rawGroups;
+            const groupMap = new Map();
+            rawGroups.forEach(g => groupMap.set(g.id, g));
+
+            // Find root groups
+            const allChildrenIds = new Set();
+            rawGroups.forEach(g => {
+                if (g.children) {
+                    g.children.forEach(c => allChildrenIds.add(c.id));
+                }
+            });
+
+            const rootGroups = rawGroups.filter(g => !allChildrenIds.has(g.id)).sort((a, b) => a.name.localeCompare(b.name));
+
+            const addGroupOpt = (group, depth) => {
+                const opt = document.createElement('option');
+                opt.value = group.id;
+                const isFolder = group.children && group.children.length > 0;
+                const indent = '\u00A0\u00A0\u00A0\u00A0'.repeat(depth);
+                opt.textContent = indent + (isFolder ? '📁 ' : '') + group.name;
+
+                elements.groupFilterInput.appendChild(opt);
+
+                if (isFolder) {
+                    const sortedChildren = group.children
+                        .map(c => groupMap.get(c.id))
+                        .filter(c => c)
+                        .sort((a, b) => a.name.localeCompare(b.name));
+
+                    sortedChildren.forEach(c => addGroupOpt(c, depth + 1));
+                }
             };
 
-            // Populate Dropdown Hierarchically if not already built
-            if (elements.groupFilterInput.options.length <= 1) {
-                elements.groupFilterInput.innerHTML = '<option value="all">All Groups</option>'; // reset
-
-                const rawGroups = groupData.rawGroups;
-                const groupMap = new Map();
-                rawGroups.forEach(g => groupMap.set(g.id, g));
-
-                // Find root groups
-                const allChildrenIds = new Set();
-                rawGroups.forEach(g => {
-                    if (g.children) {
-                        g.children.forEach(c => allChildrenIds.add(c.id));
-                    }
-                });
-
-                const rootGroups = rawGroups.filter(g => !allChildrenIds.has(g.id)).sort((a, b) => a.name.localeCompare(b.name));
-
-                const addGroupOpt = (group, depth) => {
-                    const opt = document.createElement('option');
-                    opt.value = group.id;
-                    const isFolder = group.children && group.children.length > 0;
-                    const indent = '\u00A0\u00A0\u00A0\u00A0'.repeat(depth);
-                    opt.textContent = indent + (isFolder ? '📁 ' : '') + group.name;
-
-                    elements.groupFilterInput.appendChild(opt);
-
-                    if (isFolder) {
-                        const sortedChildren = group.children
-                            .map(c => groupMap.get(c.id))
-                            .filter(c => c)
-                            .sort((a, b) => a.name.localeCompare(b.name));
-
-                        sortedChildren.forEach(c => addGroupOpt(c, depth + 1));
-                    }
-                };
-
-                rootGroups.forEach(g => addGroupOpt(g, 0));
-            }
-
-            // Calculate and display
-            updateCalculationsUI();
-            console.log("ROI Calculator: Data load complete");
-
-        } catch (error) {
-            console.error("ROI Calculator: Error fetching API data", error);
-            alert("Error fetching fleet data. Try selecting a shorter date range if your fleet is very large.");
-        } finally {
-            // Hide loading state
-            elements.loadingOverlay.classList.add('hidden');
+            rootGroups.forEach(g => addGroupOpt(g, 0));
         }
-    };
+
+        // Calculate and display
+        updateCalculationsUI();
+        console.log("ROI Calculator: Data load complete");
+
+    } catch (error) {
+        console.error("ROI Calculator: Error fetching API data", error);
+        alert("Error fetching fleet data. Try selecting a shorter date range if your fleet is very large.");
+    } finally {
+        // Hide loading state
+        elements.loadingOverlay.classList.add('hidden');
+    }
+};
+
+/**
+ * Generate and download CSV
+ */
+const exportToCsv = () => {
+    if (!cachedData.tableRows || cachedData.tableRows.length === 0) {
+        alert("No data available to export.");
+        return;
+    }
+
+    const headers = ["Vehicle", "Groups", "Idle Cost ($)", "Harsh Events", "Utilization Cost ($)", "Total Savings ($)"];
+    let csvContent = headers.join(",") + "\n";
+
+    cachedData.tableRows.forEach(row => {
+        const rowArr = [
+            `"${row.Vehicle}"`,
+            row.Groups,
+            row.IdleCost,
+            row.SafetyRiskCount,
+            row.UtilizationCost,
+            row.TotalSavings
+        ];
+        csvContent += rowArr.join(",") + "\n";
+    });
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+
+    link.setAttribute("href", url);
+    link.setAttribute("download", `ROI_Fleet_Savings_Report_${cachedData.selectedDaysCount}Days.csv`);
+    link.style.visibility = 'hidden';
+
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+};
+
+/**
+ * Attach Event Listeners to UI Interactivity
+ */
+const attachListeners = () => {
+    // Recalculate instantly when math inputs change
+    elements.fuelPriceInput.addEventListener('input', updateCalculationsUI);
+    elements.stationaryCostInput.addEventListener('input', updateCalculationsUI);
+    elements.harshCostInput.addEventListener('input', updateCalculationsUI);
+    elements.groupFilterInput.addEventListener('change', updateCalculationsUI);
+
+    // Fetch new API data when Calculate is clicked
+    elements.calculateBtn.addEventListener('click', fetchData);
+
+    // Date Validation constraints
+    elements.dateFromInput.addEventListener('change', () => {
+        if (elements.dateFromInput.valueAsDate > elements.dateToInput.valueAsDate) {
+            elements.dateToInput.valueAsDate = elements.dateFromInput.valueAsDate;
+        }
+    });
+
+    elements.dateToInput.addEventListener('change', () => {
+        if (elements.dateToInput.valueAsDate < elements.dateFromInput.valueAsDate) {
+            elements.dateFromInput.valueAsDate = elements.dateToInput.valueAsDate;
+        }
+    });
+
+    // Export Dropdown Logic
+    const exportBtn = document.getElementById('export-btn');
+    const exportMenu = document.getElementById('export-menu');
+    const exportExcelBtn = document.getElementById('export-excel-btn');
+
+    exportBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        exportMenu.classList.toggle('hidden');
+    });
+
+    document.addEventListener('click', () => {
+        if (!exportMenu.classList.contains('hidden')) {
+            exportMenu.classList.add('hidden');
+        }
+    });
+
+    exportExcelBtn.addEventListener('click', () => {
+        exportToCsv();
+    });
+};
+
+return {
+    /**
+     * Initialize the Add-In
+     */
+    initialize: function (api, state, callback) {
+        console.log("ROI Calculator Add-in: Initialized");
+
+        // Initialize the API Service
+        apiService = new window.GeotabApiService(api);
+
+        setDefaultDates();
+        attachListeners();
+
+        if (callback) callback();
+    },
 
     /**
-     * Generate and download CSV
+     * Focus: Page is visible
      */
-    const exportToCsv = () => {
-        if (!cachedData.tableRows || cachedData.tableRows.length === 0) {
-            alert("No data available to export.");
-            return;
-        }
-
-        const headers = ["Vehicle", "Groups", "Idle Cost ($)", "Harsh Events", "Utilization Cost ($)", "Total Savings ($)"];
-        let csvContent = headers.join(",") + "\n";
-
-        cachedData.tableRows.forEach(row => {
-            const rowArr = [
-                `"${row.Vehicle}"`,
-                row.Groups,
-                row.IdleCost,
-                row.SafetyRiskCount,
-                row.UtilizationCost,
-                row.TotalSavings
-            ];
-            csvContent += rowArr.join(",") + "\n";
-        });
-
-        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-        const link = document.createElement("a");
-        const url = URL.createObjectURL(blob);
-
-        link.setAttribute("href", url);
-        link.setAttribute("download", `ROI_Fleet_Savings_Report_${cachedData.selectedDaysCount}Days.csv`);
-        link.style.visibility = 'hidden';
-
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-    };
+    focus: function (api, state) {
+        console.log("ROI Calculator Add-in: Focused");
+        // Automatically fetch data when the add-in is opened
+        fetchData();
+    },
 
     /**
-     * Attach Event Listeners to UI Interactivity
+     * Blur: Page is hidden
      */
-    const attachListeners = () => {
-        // Recalculate instantly when math inputs change
-        elements.fuelPriceInput.addEventListener('input', updateCalculationsUI);
-        elements.stationaryCostInput.addEventListener('input', updateCalculationsUI);
-        elements.harshCostInput.addEventListener('input', updateCalculationsUI);
-        elements.groupFilterInput.addEventListener('change', updateCalculationsUI);
-
-        // Fetch new API data when Calculate is clicked
-        elements.calculateBtn.addEventListener('click', fetchData);
-
-        // Date Validation constraints
-        elements.dateFromInput.addEventListener('change', () => {
-            if (elements.dateFromInput.valueAsDate > elements.dateToInput.valueAsDate) {
-                elements.dateToInput.valueAsDate = elements.dateFromInput.valueAsDate;
-            }
-        });
-
-        elements.dateToInput.addEventListener('change', () => {
-            if (elements.dateToInput.valueAsDate < elements.dateFromInput.valueAsDate) {
-                elements.dateFromInput.valueAsDate = elements.dateToInput.valueAsDate;
-            }
-        });
-
-        // Export Dropdown Logic
-        const exportBtn = document.getElementById('export-btn');
-        const exportMenu = document.getElementById('export-menu');
-        const exportExcelBtn = document.getElementById('export-excel-btn');
-
-        exportBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            exportMenu.classList.toggle('hidden');
-        });
-
-        document.addEventListener('click', () => {
-            if (!exportMenu.classList.contains('hidden')) {
-                exportMenu.classList.add('hidden');
-            }
-        });
-
-        exportExcelBtn.addEventListener('click', () => {
-            exportToCsv();
-        });
-    };
-
-    return {
-        /**
-         * Initialize the Add-In
-         */
-        initialize: function (api, state, callback) {
-            console.log("ROI Calculator Add-in: Initialized");
-
-            // Initialize the API Service
-            apiService = new window.GeotabApiService(api);
-
-            setDefaultDates();
-            attachListeners();
-
-            if (callback) callback();
-        },
-
-        /**
-         * Focus: Page is visible
-         */
-        focus: function (api, state) {
-            console.log("ROI Calculator Add-in: Focused");
-            // Automatically fetch data when the add-in is opened
-            fetchData();
-        },
-
-        /**
-         * Blur: Page is hidden
-         */
-        blur: function () {
-            console.log("ROI Calculator Add-in: Blurred");
-            // No cleanup needed
-        }
-    };
+    blur: function () {
+        console.log("ROI Calculator Add-in: Blurred");
+        // No cleanup needed
+    }
+};
 };
