@@ -1,20 +1,12 @@
 /**
  * Service to handle data fetching from Geotab API
  *
- * Designed to scale to 10,000 vehicle fleets with 1 year of data.
- *
- * Core strategy:
- *  - ExceptionEvents: Paginated Get requests (50K records/page), advancing fromDate
- *    past the last record each page. Results are then bucketed client-side into trend
- *    periods - zero extra API calls needed regardless of fleet size or date range.
- *
- *  - Utilization: 2 odometer reads per device (start/end of range) via chunked
- *    multiCalls of 500. For 10K devices = 40 chunks total, very manageable.
- *
- *  Auto-bucketing for trend chart:
- *    <= 14 days  → Daily buckets
- *    <= 90 days  → Weekly buckets
- *    > 90 days   → Monthly buckets
+ * Designed to be resilient:
+ * - Each data function silently returns empty/safe defaults on failure rather than throwing.
+ * - This ensures partial data is always rendered even if some calls fail.
+ * - ExceptionEvents use paginated date-advancing Get (50K per page).
+ * - Utilization uses chunked odometer reads (2 per device) with a small delay between chunks
+ *   to avoid overwhelming the API at high concurrency.
  */
 window.GeotabApiService = function (api) {
     this.api = api;
@@ -36,23 +28,31 @@ window.GeotabApiService.prototype = {
         });
     },
 
+    /** Small delay helper to avoid rate-limit bursts */
+    _sleep: function (ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    },
+
     /**
-     * Run calls in sequential chunks to avoid Geotab's concurrent request limits.
-     * Chunk size of 500 is safe for any Geotab database.
+     * Run calls in sequential chunks with a small delay between each chunk.
+     * Chunk size of 200 is conservative to avoid overloading the API on larger databases.
+     * Delay of 150ms between chunks prevents burst rate-limiting.
      */
-    _runChunkedMultiCall: async function (calls, chunkSize = 500) {
+    _runChunkedMultiCall: async function (calls, chunkSize = 200, delayMs = 150) {
         let allResults = [];
         for (let i = 0; i < calls.length; i += chunkSize) {
             const chunk = calls.slice(i, i + chunkSize);
             const res = await this._multiCall(chunk);
             allResults = allResults.concat(res);
+            if (i + chunkSize < calls.length) {
+                await this._sleep(delayMs);
+            }
         }
         return allResults;
     },
 
     /**
-     * Determine auto bucket size based on the date range length.
-     * This keeps the trend chart meaningful without user input.
+     * Auto-determines bucket granularity for trend chart based on range length.
      */
     _getAutoBucketSize: function (fromDate, toDate) {
         const days = (toDate - fromDate) / (1000 * 60 * 60 * 24);
@@ -62,8 +62,7 @@ window.GeotabApiService.prototype = {
     },
 
     /**
-     * Given a date and a bucket size, return the bucket key for grouping.
-     * e.g. daily => "Mar 4", weekly => "W/Mar 3", monthly => "Mar 2026"
+     * Given a date and bucket size, return a bucket key string for grouping.
      */
     _getBucketKey: function (date, bucketSize) {
         const d = new Date(date);
@@ -72,21 +71,22 @@ window.GeotabApiService.prototype = {
         }
         if (bucketSize === 'weekly') {
             const weekStart = new Date(d);
-            weekStart.setDate(d.getDate() - d.getDay()); // Sunday of that week
+            weekStart.setDate(d.getDate() - d.getDay());
             return 'W/' + weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
         }
         return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
     },
 
     /**
-     * Build an ordered list of bucket labels between fromDate and toDate.
+     * Build an ordered list of unique bucket labels for the full date range.
      */
     _buildBucketLabels: function (fromDate, toDate, bucketSize) {
         const labels = [];
         const seen = new Set();
         let curr = new Date(fromDate);
+        let failsafe = 0;
 
-        while (curr <= toDate) {
+        while (curr <= toDate && failsafe < 1000) {
             const key = this._getBucketKey(curr, bucketSize);
             if (!seen.has(key)) {
                 labels.push(key);
@@ -95,26 +95,22 @@ window.GeotabApiService.prototype = {
             if (bucketSize === 'daily') curr.setDate(curr.getDate() + 1);
             else if (bucketSize === 'weekly') curr.setDate(curr.getDate() + 7);
             else curr.setMonth(curr.getMonth() + 1);
+            failsafe++;
         }
         return labels;
     },
 
     /**
-     * Stream ALL ExceptionEvents for a rule using auto-paginated Get calls.
-     *
-     * Each page requests up to 50,000 records. When we get a full page, we advance
-     * fromDate to just after the last record's activeTo and request the next page.
-     * This continues until the results are smaller than PAGE_SIZE (end of data).
-     *
-     * No matter how large the fleet or date range, each individual HTTP request
-     * is always bounded to a single JSON response, and we never exceed Geotab limits.
+     * Paginated fetch for ExceptionEvents by a single rule ID.
+     * Fetches up to PAGE_SIZE records per call and advances fromDate past the last record.
+     * Returns empty array if the rule doesn't exist or any error occurs (silent degradation).
      */
     _feedExceptionEvents: async function (ruleId, fromDate, toDate) {
         const PAGE_SIZE = 50000;
         let allEvents = [];
         let currentFromDate = new Date(fromDate);
 
-        while (true) {
+        while (currentFromDate < toDate) {
             let results;
             try {
                 results = await this._call("Get", {
@@ -127,7 +123,8 @@ window.GeotabApiService.prototype = {
                     resultsLimit: PAGE_SIZE
                 });
             } catch (err) {
-                console.warn(`ExceptionEvent fetch failed for rule ${ruleId}:`, err);
+                // Rule doesn't exist in this DB, or query failed — skip silently
+                console.warn(`ExceptionEvent fetch skipped for rule "${ruleId}":`, err.message || err);
                 break;
             }
 
@@ -135,13 +132,11 @@ window.GeotabApiService.prototype = {
 
             allEvents = allEvents.concat(results);
 
-            if (results.length < PAGE_SIZE) break; // All data consumed
+            if (results.length < PAGE_SIZE) break; // Consumed all data
 
-            // Advance to just after the last record
+            // Advance to just after the last event's time
             const lastTime = new Date(results[results.length - 1].activeTo || results[results.length - 1].activeFrom);
             currentFromDate = new Date(lastTime.getTime() + 1);
-
-            if (currentFromDate >= toDate) break;
         }
 
         return allEvents;
@@ -157,12 +152,13 @@ window.GeotabApiService.prototype = {
             return devices.filter(d => d.activeTo && new Date(d.activeTo) > now);
         } catch (e) {
             console.error("Error fetching devices", e);
-            throw e;
+            return []; // Return empty rather than crashing
         }
     },
 
     /**
-     * Get Device Groups map and the raw group list (for hierarchy dropdown).
+     * Get Device Groups map and the raw group list.
+     * Never throws — returns empty maps on failure.
      */
     getDeviceGroupsMap: async function () {
         try {
@@ -192,14 +188,14 @@ window.GeotabApiService.prototype = {
 
             return { map: deviceGroupMap, rawGroups: groups };
         } catch (e) {
-            console.error("Error fetching groups", e);
+            console.warn("Error fetching groups (non-fatal):", e);
             return { map: {}, rawGroups: [] };
         }
     },
 
     /**
-     * Get idle duration per device + trend data (bucketed client-side).
-     * Uses paginated Get — no rate limit issues.
+     * Get idle duration per device + auto-bucketed trend data.
+     * Returns safe empty defaults on failure.
      */
     getIdleDurationPerDevice: async function (devices, fromDate, toDate) {
         try {
@@ -220,61 +216,73 @@ window.GeotabApiService.prototype = {
                 deviceIdling[devId] = (deviceIdling[devId] || 0) + hours;
                 totalHours += hours;
 
-                // Bucket by event start date
                 const key = this._getBucketKey(event.activeFrom, bucketSize);
-                if (bucketHours[key] !== undefined) bucketHours[key] += hours;
+                if (key in bucketHours) bucketHours[key] += hours;
             });
 
             const trendData = bucketLabels.map(l => ({ label: l, value: bucketHours[l] || 0 }));
             return { totalHours, deviceIdling, trendData, bucketSize };
         } catch (e) {
-            console.error("Error fetching idle data", e);
-            throw e;
+            console.warn("Error fetching idle data (non-fatal):", e);
+            return { totalHours: 0, deviceIdling: {}, trendData: [], bucketSize: 'monthly' };
         }
     },
 
     /**
-     * Get harsh driving event counts per device + trend data (bucketed client-side).
+     * Get harsh driving event counts per device + trend data.
+     * Each rule is fetched independently. Failures on individual rules are silent.
+     * Returns safe empty defaults on overall failure.
      */
     getHarshDrivingPerDevice: async function (devices, fromDate, toDate) {
-        const bucketSize = this._getAutoBucketSize(fromDate, toDate);
-        const bucketLabels = this._buildBucketLabels(fromDate, toDate, bucketSize);
-        const bucketCounts = {};
-        bucketLabels.forEach(l => { bucketCounts[l] = 0; });
+        try {
+            const bucketSize = this._getAutoBucketSize(fromDate, toDate);
+            const bucketLabels = this._buildBucketLabels(fromDate, toDate, bucketSize);
+            const bucketCounts = {};
+            bucketLabels.forEach(l => { bucketCounts[l] = 0; });
 
-        const deviceHarshCounts = {};
-        let totalCount = 0;
+            const deviceHarshCounts = {};
+            let totalCount = 0;
 
-        const ruleIds = [
-            "RuleJackrabbitStartsId",
-            "RuleHarshBrakingId",
-            "RuleHarshCorneringId"
-        ];
+            const ruleIds = [
+                "RuleJackrabbitStartsId",
+                "RuleHarshBrakingId",
+                "RuleHarshCorneringId"
+            ];
 
-        for (const ruleId of ruleIds) {
-            const events = await this._feedExceptionEvents(ruleId, fromDate, toDate);
+            for (const ruleId of ruleIds) {
+                const events = await this._feedExceptionEvents(ruleId, fromDate, toDate);
+                events.forEach(event => {
+                    if (!event.device || !event.device.id) return;
+                    const devId = event.device.id;
+                    deviceHarshCounts[devId] = (deviceHarshCounts[devId] || 0) + 1;
+                    totalCount++;
 
-            events.forEach(event => {
-                if (!event.device || !event.device.id) return;
-                const devId = event.device.id;
-                deviceHarshCounts[devId] = (deviceHarshCounts[devId] || 0) + 1;
-                totalCount++;
+                    const key = this._getBucketKey(event.activeFrom, bucketSize);
+                    if (key in bucketCounts) bucketCounts[key]++;
+                });
+                // Small pause between rule fetches
+                await this._sleep(100);
+            }
 
-                const key = this._getBucketKey(event.activeFrom, bucketSize);
-                if (bucketCounts[key] !== undefined) bucketCounts[key]++;
-            });
+            const trendData = bucketLabels.map(l => ({ label: l, value: bucketCounts[l] || 0 }));
+            return { totalCount, deviceHarshCounts, trendData, bucketSize };
+        } catch (e) {
+            console.warn("Error fetching harsh driving data (non-fatal):", e);
+            return { totalCount: 0, deviceHarshCounts: {}, trendData: [], bucketSize: 'monthly' };
         }
-
-        const trendData = bucketLabels.map(l => ({ label: l, value: bucketCounts[l] || 0 }));
-        return { totalCount, deviceHarshCounts, trendData, bucketSize };
     },
 
     /**
-     * Get utilization per device: exactly 2 odometer reads per vehicle (start/end).
-     * Chunked into batches of 500 — handles 10K device fleets in ~40 API round-trips.
+     * Get utilization per device using 2 odometer reads (start + end of period).
+     * Chunked into small batches with delays to avoid overwhelming the API.
+     * Returns safe empty defaults on failure.
      */
     getUtilizationPerDevice: async function (devices, fromDate, toDate) {
         try {
+            if (!devices || devices.length === 0) {
+                return { underutilizedCount: 0, deviceUtilization: {} };
+            }
+
             const startCalls = devices.map(d => ["Get", {
                 typeName: "StatusData",
                 search: {
@@ -295,10 +303,10 @@ window.GeotabApiService.prototype = {
                 resultsLimit: 1
             }]);
 
-            const [startResults, endResults] = await Promise.all([
-                this._runChunkedMultiCall(startCalls),
-                this._runChunkedMultiCall(endCalls)
-            ]);
+            // Run sequentially (not in parallel) to avoid overwhelming the connection pool
+            const startResults = await this._runChunkedMultiCall(startCalls);
+            await this._sleep(250); // Brief pause between start and end reads
+            const endResults = await this._runChunkedMultiCall(endCalls);
 
             const deviceUtilization = {};
             let underutilizedCount = 0;
@@ -311,7 +319,7 @@ window.GeotabApiService.prototype = {
                 if (startOdo !== null && endOdo !== null) {
                     isUnderutilized = Math.abs(endOdo - startOdo) < 2000; // < 2km = stationary
                 } else {
-                    isUnderutilized = true; // No odometer data = assume offline/untracked
+                    isUnderutilized = true; // No odometer data = offline/untracked for period
                 }
 
                 deviceUtilization[d.id] = isUnderutilized;
@@ -320,8 +328,8 @@ window.GeotabApiService.prototype = {
 
             return { underutilizedCount, deviceUtilization };
         } catch (e) {
-            console.error("Error fetching utilization data", e);
-            throw e;
+            console.warn("Error fetching utilization data (non-fatal):", e);
+            return { underutilizedCount: 0, deviceUtilization: {} };
         }
     }
 };
