@@ -107,11 +107,21 @@
                 </div>
             </section>
 
-            <!-- Chart Section -->
+            <!-- Chart Section: Savings Breakdown (Bar) -->
             <section class="chart-section panel">
-                <h2>Savings Breakdown</h2>
+                <h2>Savings Breakdown by Category</h2>
                 <div class="chart-container">
                     <canvas id="savingsChart"></canvas>
+                </div>
+            </section>
+
+            <!-- Chart Section: Trend Over Time (Line) -->
+            <section class="chart-section panel">
+                <h2 id="trend-chart-title">Cost Trend over Time</h2>
+                <p class="detail" style="margin-top: -12px; margin-bottom: 16px;">Shows total estimated cost per
+                    sub-period. A downward trend means your fleet is improving.</p>
+                <div class="chart-container">
+                    <canvas id="trendChart"></canvas>
                 </div>
             </section>
 
