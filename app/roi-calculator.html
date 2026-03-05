@@ -33,14 +33,6 @@
                     </div>
                 </div>
 
-                <div class="filter-group">
-                    <label for="sub-period" class="small-label">Sub-period (Utilization)</label>
-                    <select id="sub-period" class="geotab-input" style="width: 120px;">
-                        <option value="Daily">Daily</option>
-                        <option value="Weekly">Weekly</option>
-                        <option value="Monthly">Monthly</option>
-                    </select>
-                </div>
 
                 <div class="filter-group">
                     <label for="group-filter" class="small-label">Groups</label>
@@ -115,15 +107,17 @@
                 </div>
             </section>
 
-            <!-- Chart Section: Trend Over Time (Line) -->
+            <!-- Chart Section: Cost Trend Over Time (Line) -->
             <section class="chart-section panel">
-                <h2 id="trend-chart-title">Cost Trend over Time</h2>
-                <p class="detail" style="margin-top: -12px; margin-bottom: 16px;">Shows total estimated cost per
-                    sub-period. A downward trend means your fleet is improving.</p>
+                <h2 id="trend-chart-title">Cost Trend Over Time</h2>
+                <p class="detail" style="margin-top: -12px; margin-bottom: 16px;">A downward trend means your fleet is
+                    improving. Auto-scaled to the selected date range.</p>
                 <div class="chart-container">
                     <canvas id="trendChart"></canvas>
                 </div>
             </section>
+
+
 
             <!-- Leaderboards Section -->
             <section class="leaderboards-section">
