@@ -124,8 +124,11 @@ window.GeotabApiService.prototype = {
             guard++;
             if (guard > 10000) break; // Defensive exit
 
+            if (!currentFromDate || isNaN(currentFromDate) || currentFromDate >= toDate) break;
+
             let results;
             try {
+                console.log(`Geotab API: Fetching rule ${ruleId} from ${currentFromDate.toISOString()}...`);
                 results = await this._call("Get", {
                     typeName: "ExceptionEvent",
                     search: {
@@ -137,7 +140,7 @@ window.GeotabApiService.prototype = {
                     resultsLimit: this.EXCEPTION_PAGE_SIZE
                 });
             } catch (err) {
-                console.warn(`Exception fetch for rule ${ruleId} skipped (non-fatal):`, err);
+                console.warn(`Geotab API: Exception fetch for rule ${ruleId} failed/skipped:`, err.message || err);
                 break;
             }
 
@@ -158,35 +161,31 @@ window.GeotabApiService.prototype = {
         }
     },
 
-    /** Fetch active devices */
-    getDevices: async function () {
+    /**
+     * Fetch all core fleet info (Devices + Groups) in one go for consistency.
+     */
+    getFleetInfo: async function () {
         try {
-            const devices = await this._call("Get", { typeName: "Device" });
-            const now = new Date();
-            return (devices || []).filter(d => {
-                if (!d) return false;
-                if (!d.activeTo) return true;
-                return new Date(d.activeTo) > now;
-            });
-        } catch (e) {
-            console.warn("Device fetch failed:", e);
-            return [];
-        }
-    },
-
-    /** Fetch groups mapping */
-    getDeviceGroupsMap: async function () {
-        try {
+            console.log("Geotab API: Fetching fleet info (Devices + Groups)...");
             const results = await this._multiCall([
                 ["Get", { typeName: "Device" }],
                 ["Get", { typeName: "Group" }]
             ]);
 
-            const devices = results[0] || [];
-            const groups = results[1] || [];
+            const allDevices = results[0] || [];
+            const rawGroups = results[1] || [];
+            const now = new Date();
 
+            // 1. Filter active devices
+            const devices = allDevices.filter(d => {
+                if (!d) return false;
+                if (!d.activeTo) return true;
+                return new Date(d.activeTo) > now;
+            });
+
+            // 2. Build group maps
             const groupNameMap = {};
-            groups.forEach(g => { groupNameMap[g.id] = g.name; });
+            rawGroups.forEach(g => { groupNameMap[g.id] = g.name; });
 
             const deviceGroupMap = {};
             devices.forEach(d => {
@@ -200,10 +199,11 @@ window.GeotabApiService.prototype = {
                 deviceGroupMap[d.id] = names.join(", ");
             });
 
-            return { map: deviceGroupMap, rawGroups: groups };
+            console.log(`Geotab API: Fleet info loaded. ${devices.length} active devices across ${rawGroups.length} groups.`);
+            return { devices, deviceGroupsMap: deviceGroupMap, rawGroups };
         } catch (e) {
-            console.warn("Group fetch failed:", e);
-            return { map: {}, rawGroups: [] };
+            console.error("Geotab API: Fatal error fetching fleet info:", e);
+            return { devices: [], deviceGroupsMap: {}, rawGroups: [] };
         }
     },
 
