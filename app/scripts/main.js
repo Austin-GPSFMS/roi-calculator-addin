@@ -357,8 +357,8 @@ geotab.addin.roiCalculator = function (api, state) {
             const devHarshCount = cachedData.harshEventsData.deviceHarshCounts[devId] || 0;
             const devSafetyCost = devHarshCount * harshEventCost;
 
-            const devStationaryPeriods = cachedData.utilizationData.deviceUtilizationSubperiods[devId] || 0;
-            const devUtilCost = devStationaryPeriods * daysPerSubPeriod * stationaryDailyCost;
+            const isStationary = cachedData.utilizationData.deviceUtilization[devId] || false;
+            const devUtilCost = isStationary ? (stationaryDailyCost * days) : 0;
 
             const devTotalPotentialSavings = devIdleCost + devSafetyCost + devUtilCost;
 
