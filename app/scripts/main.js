@@ -11,7 +11,6 @@ geotab.addin.roiCalculator = function (api, state) {
     const elements = {
         dateFromInput: document.getElementById('date-from'),
         dateToInput: document.getElementById('date-to'),
-        subPeriodInput: document.getElementById('sub-period'),
         groupFilterInput: document.getElementById('group-filter'),
         fuelPriceInput: document.getElementById('fuel-price'),
         harshCostInput: document.getElementById('harsh-cost'),
@@ -32,7 +31,7 @@ geotab.addin.roiCalculator = function (api, state) {
         leaderboardWorstBody: document.getElementById('leaderboard-worst-body'),
         leaderboardBestBody: document.getElementById('leaderboard-best-body'),
 
-        // Chart containers
+        // Chart
         savingsChartCanvas: document.getElementById('savingsChart'),
         trendChartCanvas: document.getElementById('trendChart')
     };
@@ -42,18 +41,17 @@ geotab.addin.roiCalculator = function (api, state) {
 
     // Add-in state
     let cachedData = {
-        selectedDaysCount: 30, // Default for first load
+        selectedDaysCount: 30,
         devices: [],
-        deviceGroupsMap: {}, // Stores deviceId -> groupName string
-        deviceGroupIdsMap: {}, // Stores deviceId -> [groupIds]
+        deviceGroupsMap: {},
         rawGroups: [],
-        idleHoursData: { totalHours: 0, deviceIdling: {}, trendData: [] },
-        harshEventsData: { totalCount: 0, deviceHarshCounts: {}, trendData: [] },
-        utilizationData: { totalStationaryPeriods: 0, deviceUtilizationSubperiods: {}, trendData: [] },
-        tableRows: [] // Used for export
+        idleHoursData: { totalHours: 0, deviceIdling: {}, trendData: [], bucketSize: 'monthly' },
+        harshEventsData: { totalCount: 0, deviceHarshCounts: {}, trendData: [], bucketSize: 'monthly' },
+        utilizationData: { underutilizedCount: 0, deviceUtilization: {} },
+        tableRows: []
     };
 
-    // Chart Instance Maps
+    // Chart Instances
     let savingsChartInstance = null;
     let trendChartInstance = null;
 
@@ -171,29 +169,33 @@ geotab.addin.roiCalculator = function (api, state) {
     };
 
     /**
-     * Renders the Trend Line Chart (Cost over Time) using per-period data
+     * Renders the Trend Line Chart (Cost over Time) using bucketed data from API.
+     * BucketSize is auto-detected from the date range: daily/weekly/monthly.
      */
-    const renderTrendChart = (subPeriodVal) => {
+    const renderTrendChart = () => {
         if (!elements.trendChartCanvas) return;
         const ctx = elements.trendChartCanvas.getContext('2d');
 
         const fuelPrice = parseFloat(elements.fuelPriceInput.value) || 0;
         const harshEventCost = parseFloat(elements.harshCostInput.value) || 0;
         const stationaryDailyCost = parseFloat(elements.stationaryCostInput.value) || 0;
-        let daysPerSubPeriod = 1;
-        if (subPeriodVal === 'Weekly') daysPerSubPeriod = 7;
-        if (subPeriodVal === 'Monthly') daysPerSubPeriod = 30;
+
+        const bucketSize = cachedData.idleHoursData.bucketSize || 'monthly';
+        const days = cachedData.selectedDaysCount || 30;
 
         const idleTrend = cachedData.idleHoursData.trendData || [];
         const harshTrend = cachedData.harshEventsData.trendData || [];
-        const utilTrend = cachedData.utilizationData.trendData || [];
+
+        if (idleTrend.length === 0) return; // No data yet
 
         const labels = idleTrend.map(d => d.label);
 
         const idleDataset = idleTrend.map(d => parseFloat((d.value * IDLE_FUEL_BURN_RATE_GPH * fuelPrice).toFixed(2)));
         const harshDataset = harshTrend.map(d => parseFloat((d.value * harshEventCost).toFixed(2)));
-        const utilDataset = utilTrend.map(d => parseFloat((d.value * daysPerSubPeriod * stationaryDailyCost).toFixed(2)));
-        const totalDataset = labels.map((_, i) => parseFloat(((idleDataset[i] || 0) + (harshDataset[i] || 0) + (utilDataset[i] || 0)).toFixed(2)));
+        const totalDataset = labels.map((_, i) => parseFloat(((idleDataset[i] || 0) + (harshDataset[i] || 0)).toFixed(2)));
+
+        // Bucket granularity label
+        const granularityLabel = bucketSize.charAt(0).toUpperCase() + bucketSize.slice(1);
 
         const trendConfig = {
             type: 'line',
@@ -201,7 +203,7 @@ geotab.addin.roiCalculator = function (api, state) {
                 labels: labels,
                 datasets: [
                     {
-                        label: 'Total Cost',
+                        label: 'Total Fleet Cost',
                         data: totalDataset,
                         borderColor: 'rgba(37, 83, 153, 1)',
                         backgroundColor: 'rgba(37, 83, 153, 0.1)',
@@ -224,16 +226,6 @@ geotab.addin.roiCalculator = function (api, state) {
                         label: 'Harsh Driving Cost',
                         data: harshDataset,
                         borderColor: 'rgba(250, 162, 27, 0.8)',
-                        borderWidth: 1.5,
-                        borderDash: [5, 5],
-                        fill: false,
-                        tension: 0.3,
-                        pointRadius: 0
-                    },
-                    {
-                        label: 'Stationary Asset Cost',
-                        data: utilDataset,
-                        borderColor: 'rgba(239, 68, 68, 0.8)',
                         borderWidth: 1.5,
                         borderDash: [5, 5],
                         fill: false,
@@ -270,9 +262,9 @@ geotab.addin.roiCalculator = function (api, state) {
         }
         trendChartInstance = new window.Chart(ctx, trendConfig);
 
-        // Update title to reflect sub-period
+        // Update chart title with auto-detected granularity
         const titleEl = document.getElementById('trend-chart-title');
-        if (titleEl) titleEl.textContent = `Cost Trend — ${subPeriodVal} View`;
+        if (titleEl) titleEl.textContent = `Cost Trend — ${granularityLabel} View`;
     };
 
     /**
@@ -285,11 +277,6 @@ geotab.addin.roiCalculator = function (api, state) {
         const harshEventCost = parseFloat(elements.harshCostInput.value) || 0;
         const days = cachedData.selectedDaysCount || 30;
         const selectedGroupId = elements.groupFilterInput.value;
-        const subPeriodVal = elements.subPeriodInput.value || 'Daily';
-
-        let daysPerSubPeriod = 1;
-        if (subPeriodVal === 'Weekly') daysPerSubPeriod = 7;
-        if (subPeriodVal === 'Monthly') daysPerSubPeriod = 30;
 
         // Filter Devices Globally based on group
         let filteredDevices = cachedData.devices;
@@ -303,18 +290,18 @@ geotab.addin.roiCalculator = function (api, state) {
         // Recalculate Totals based on filtered devices
         let totalIdleHours = 0;
         let totalHarshCount = 0;
-        let totalStationaryPeriodsCount = 0;
+        let totalUnderutilizedCount = 0;
 
         filteredDevices.forEach(d => {
             totalIdleHours += cachedData.idleHoursData.deviceIdling[d.id] || 0;
             totalHarshCount += cachedData.harshEventsData.deviceHarshCounts[d.id] || 0;
-            totalStationaryPeriodsCount += cachedData.utilizationData.deviceUtilizationSubperiods[d.id] || 0;
+            if (cachedData.utilizationData.deviceUtilization[d.id]) totalUnderutilizedCount++;
         });
 
         // 1. Top Level Metrics
         const totalIdleCost = totalIdleHours * IDLE_FUEL_BURN_RATE_GPH * fuelPrice;
         const totalSafetyCost = totalHarshCount * harshEventCost;
-        const utilCostTotal = totalStationaryPeriodsCount * daysPerSubPeriod * stationaryDailyCost;
+        const utilCostTotal = totalUnderutilizedCount * stationaryDailyCost * days;
 
         const totalSavings = totalIdleCost + totalSafetyCost + utilCostTotal; // Now includes Safety Config Cost
 
@@ -326,7 +313,7 @@ geotab.addin.roiCalculator = function (api, state) {
         elements.detailSafety.textContent = `${formatNumber(totalHarshCount)} events across fleet`;
 
         elements.metricUtil.textContent = formatCurrency(utilCostTotal);
-        elements.detailUtil.textContent = `${formatNumber(totalStationaryPeriodsCount)} stationary ${subPeriodVal.toLowerCase()} periods`;
+        elements.detailUtil.textContent = `${formatNumber(totalUnderutilizedCount)} vehicles underutilized`;
 
         elements.metricTotal.textContent = formatCurrency(totalSavings);
 
@@ -340,7 +327,7 @@ geotab.addin.roiCalculator = function (api, state) {
         renderChart(totalIdleCost, totalSafetyCost, utilCostTotal);
 
         // Render Trend Line Chart
-        renderTrendChart(subPeriodVal);
+        renderTrendChart();
 
         // 2. Build Table & Leaderboard Data
         const tbody = document.getElementById('asset-table-body');
@@ -478,14 +465,13 @@ geotab.addin.roiCalculator = function (api, state) {
             const groupData = await apiService.getDeviceGroupsMap();
 
             console.log("ROI Calculator: Fetching idle duration...");
-            const subPeriodVal = elements.subPeriodInput.value || 'Daily';
-            const idleHoursData = await apiService.getIdleDurationPerDevice(devices, fromDate, toDate, subPeriodVal);
+            const idleHoursData = await apiService.getIdleDurationPerDevice(devices, fromDate, toDate);
 
             console.log("ROI Calculator: Fetching harsh driving data...");
-            const harshEventsData = await apiService.getHarshDrivingPerDevice(devices, fromDate, toDate, subPeriodVal);
+            const harshEventsData = await apiService.getHarshDrivingPerDevice(devices, fromDate, toDate);
 
             console.log("ROI Calculator: Fetching trip utilization...");
-            const utilizationData = await apiService.getUtilizationPerDevice(devices, fromDate, toDate, subPeriodVal);
+            const utilizationData = await apiService.getUtilizationPerDevice(devices, fromDate, toDate);
 
             // Cache data
             cachedData = {
@@ -598,9 +584,8 @@ geotab.addin.roiCalculator = function (api, state) {
         elements.harshCostInput.addEventListener('input', updateCalculationsUI);
         elements.groupFilterInput.addEventListener('change', updateCalculationsUI);
 
-        // Fetch new API data when these change
+        // Fetch new API data when Calculate is clicked
         elements.calculateBtn.addEventListener('click', fetchData);
-        elements.subPeriodInput.addEventListener('change', fetchData);
 
         // Date Validation constraints
         elements.dateFromInput.addEventListener('change', () => {
