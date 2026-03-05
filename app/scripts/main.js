@@ -32,8 +32,9 @@ geotab.addin.roiCalculator = function (api, state) {
         leaderboardWorstBody: document.getElementById('leaderboard-worst-body'),
         leaderboardBestBody: document.getElementById('leaderboard-best-body'),
 
-        // Chart container
-        savingsChartCanvas: document.getElementById('savingsChart')
+        // Chart containers
+        savingsChartCanvas: document.getElementById('savingsChart'),
+        trendChartCanvas: document.getElementById('trendChart')
     };
 
     // Core Constants for calculations (Assumptions)
@@ -46,14 +47,15 @@ geotab.addin.roiCalculator = function (api, state) {
         deviceGroupsMap: {}, // Stores deviceId -> groupName string
         deviceGroupIdsMap: {}, // Stores deviceId -> [groupIds]
         rawGroups: [],
-        idleHoursData: { totalHours: 0, deviceIdling: {} },
-        harshEventsData: { totalCount: 0, deviceHarshCounts: {} },
-        utilizationData: { totalStationaryPeriods: 0, deviceUtilizationSubperiods: {} },
+        idleHoursData: { totalHours: 0, deviceIdling: {}, trendData: [] },
+        harshEventsData: { totalCount: 0, deviceHarshCounts: {}, trendData: [] },
+        utilizationData: { totalStationaryPeriods: 0, deviceUtilizationSubperiods: {}, trendData: [] },
         tableRows: [] // Used for export
     };
 
-    // Chart Instance Map
+    // Chart Instance Maps
     let savingsChartInstance = null;
+    let trendChartInstance = null;
 
     /**
      * Set default dates in UI (Last 30 days)
@@ -169,6 +171,111 @@ geotab.addin.roiCalculator = function (api, state) {
     };
 
     /**
+     * Renders the Trend Line Chart (Cost over Time) using per-period data
+     */
+    const renderTrendChart = (subPeriodVal) => {
+        if (!elements.trendChartCanvas) return;
+        const ctx = elements.trendChartCanvas.getContext('2d');
+
+        const fuelPrice = parseFloat(elements.fuelPriceInput.value) || 0;
+        const harshEventCost = parseFloat(elements.harshCostInput.value) || 0;
+        const stationaryDailyCost = parseFloat(elements.stationaryCostInput.value) || 0;
+        let daysPerSubPeriod = 1;
+        if (subPeriodVal === 'Weekly') daysPerSubPeriod = 7;
+        if (subPeriodVal === 'Monthly') daysPerSubPeriod = 30;
+
+        const idleTrend = cachedData.idleHoursData.trendData || [];
+        const harshTrend = cachedData.harshEventsData.trendData || [];
+        const utilTrend = cachedData.utilizationData.trendData || [];
+
+        const labels = idleTrend.map(d => d.label);
+
+        const idleDataset = idleTrend.map(d => parseFloat((d.value * IDLE_FUEL_BURN_RATE_GPH * fuelPrice).toFixed(2)));
+        const harshDataset = harshTrend.map(d => parseFloat((d.value * harshEventCost).toFixed(2)));
+        const utilDataset = utilTrend.map(d => parseFloat((d.value * daysPerSubPeriod * stationaryDailyCost).toFixed(2)));
+        const totalDataset = labels.map((_, i) => parseFloat(((idleDataset[i] || 0) + (harshDataset[i] || 0) + (utilDataset[i] || 0)).toFixed(2)));
+
+        const trendConfig = {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: 'Total Cost',
+                        data: totalDataset,
+                        borderColor: 'rgba(37, 83, 153, 1)',
+                        backgroundColor: 'rgba(37, 83, 153, 0.1)',
+                        borderWidth: 3,
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: labels.length > 60 ? 0 : 4
+                    },
+                    {
+                        label: 'Idle Cost',
+                        data: idleDataset,
+                        borderColor: 'rgba(37, 83, 153, 0.5)',
+                        borderWidth: 1.5,
+                        borderDash: [5, 5],
+                        fill: false,
+                        tension: 0.3,
+                        pointRadius: 0
+                    },
+                    {
+                        label: 'Harsh Driving Cost',
+                        data: harshDataset,
+                        borderColor: 'rgba(250, 162, 27, 0.8)',
+                        borderWidth: 1.5,
+                        borderDash: [5, 5],
+                        fill: false,
+                        tension: 0.3,
+                        pointRadius: 0
+                    },
+                    {
+                        label: 'Stationary Asset Cost',
+                        data: utilDataset,
+                        borderColor: 'rgba(239, 68, 68, 0.8)',
+                        borderWidth: 1.5,
+                        borderDash: [5, 5],
+                        fill: false,
+                        tension: 0.3,
+                        pointRadius: 0
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: { mode: 'index', intersect: false },
+                plugins: {
+                    legend: { position: 'top' },
+                    tooltip: {
+                        callbacks: {
+                            label: function (context) {
+                                return `${context.dataset.label}: ${formatCurrency(context.parsed.y)}`;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: { ticks: { maxTicksLimit: 12, maxRotation: 45, minRotation: 30 } },
+                    y: {
+                        ticks: { callback: value => '$' + value.toLocaleString() }
+                    }
+                }
+            }
+        };
+
+        if (trendChartInstance) {
+            trendChartInstance.destroy();
+        }
+        trendChartInstance = new window.Chart(ctx, trendConfig);
+
+        // Update title to reflect sub-period
+        const titleEl = document.getElementById('trend-chart-title');
+        if (titleEl) titleEl.textContent = `Cost Trend — ${subPeriodVal} View`;
+    };
+
+    /**
      * Renders the calculated mathematical results back to the UI
      */
     const updateCalculationsUI = () => {
@@ -229,8 +336,11 @@ geotab.addin.roiCalculator = function (api, state) {
             totalCardDetail.textContent = `Over the selected ${days} days`;
         }
 
-        // Render Visual Breakdown
+        // Render Visual Breakdown (Bar)
         renderChart(totalIdleCost, totalSafetyCost, utilCostTotal);
+
+        // Render Trend Line Chart
+        renderTrendChart(subPeriodVal);
 
         // 2. Build Table & Leaderboard Data
         const tbody = document.getElementById('asset-table-body');
@@ -368,13 +478,13 @@ geotab.addin.roiCalculator = function (api, state) {
             const groupData = await apiService.getDeviceGroupsMap();
 
             console.log("ROI Calculator: Fetching idle duration...");
-            const idleHoursData = await apiService.getIdleDurationPerDevice(devices, fromDate, toDate);
+            const subPeriodVal = elements.subPeriodInput.value || 'Daily';
+            const idleHoursData = await apiService.getIdleDurationPerDevice(devices, fromDate, toDate, subPeriodVal);
 
             console.log("ROI Calculator: Fetching harsh driving data...");
-            const harshEventsData = await apiService.getHarshDrivingPerDevice(devices, fromDate, toDate);
+            const harshEventsData = await apiService.getHarshDrivingPerDevice(devices, fromDate, toDate, subPeriodVal);
 
             console.log("ROI Calculator: Fetching trip utilization...");
-            const subPeriodVal = elements.subPeriodInput.value || 'Daily';
             const utilizationData = await apiService.getUtilizationPerDevice(devices, fromDate, toDate, subPeriodVal);
 
             // Cache data
